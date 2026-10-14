@@ -1,0 +1,61 @@
+# Todo: look into lifting some parts of this into main repo.
+
+# Speculative data directory. Delete if unused in the end.
+/data/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment variables/secrets
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+logs/
+
+# Editors (can be changed if we want to share configurations)
+.vscode/
+.idea/
+
+# The rest of this are various types of litter files.
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Build systems
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+wheels/
+
+# Testing
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.tox/
+.nox/
+.hypothesis/
+
+# Type checkers and linters
+.mypy_cache/
+.ruff_cache/
+.pyright/
+.pytype/
+.dmypy.json
+dmypy.json
+
+# OS
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
