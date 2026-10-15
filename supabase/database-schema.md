@@ -1,7 +1,6 @@
 # Database Schema (Draft / Mock)
 
-> Status: **draft for team review**. This is a starting point for the Database & Design
-> specification milestone. Names, enums and columns are open for discussion.
+> Status: **draft**. 
 
 Database: **Supabase (Postgres)**. Auth: **Supabase Auth** (`auth.users`).
 Binary files (voice samples, call recordings) live in **Supabase Storage**, and the tables
