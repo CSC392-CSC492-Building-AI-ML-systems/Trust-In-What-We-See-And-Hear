@@ -1,8 +1,12 @@
 # api
 
-A project created with FastAPI CLI.
+<!-- Edited from the default template readme -->
+
+The backend API for the project, built with FastAPI.
 
 ## Quick Start
+
+First, [download uv](https://docs.astral.sh/uv/getting-started/installation/). 
 
 ### Start the development server
 
@@ -10,22 +14,12 @@ A project created with FastAPI CLI.
 uv run fastapi dev
 ```
 
-Visit http://localhost:8000
+- Visit http://localhost:8000 for the API.
+- Visit http://localhost:8000/docs for API docs.
+- Visit http://localhost:8000/openapi.json for OpenAPI schema.
 
-### Deploy to FastAPI Cloud
 
-Sign up and log in at https://fastapicloud.com, then deploy with:
-
-```bash
-uv run fastapi deploy
-```
-
-## Project Structure
-
-- `main.py` - Your FastAPI application
-- `pyproject.toml` - Project dependencies
-
-## Learn More
+## Developing with FastAPI
 
 - [FastAPI Documentation](https://fastapi.tiangolo.com)
 - [FastAPI Cloud](https://fastapicloud.com)
