@@ -1,6 +1,6 @@
 # Database Schema (Draft / Mock)
 
-> Status: **draft**. 
+> Status: **Reviewed**. 
 
 Database: **Supabase (Postgres)**. Auth: **Supabase Auth** (`auth.users`).
 Binary files (voice samples, call recordings) live in **Supabase Storage**, and the tables
@@ -19,7 +19,6 @@ only store the storage path.
 | `voices` | Cloned voices (ElevenLabs), each attached to a profile | `trainVoice` |
 | `scam_scenarios` | Catalog of scam types and scripts the AI pipeline uses | `CreateCall` (picked when creating a call) |
 | `calls` | One row per simulated scam call | `CreateCall`, `GetCallHistory`, `GetCallDetails` |
-| `call_turns` | Transcript of a call, one row per utterance | `GetCallDetails` |
 | `call_results` | Post-call score, summary and feedback | `GetCallDetails` |
 
 ### Entity relationships
@@ -35,7 +34,6 @@ erDiagram
     profiles |o--o{ calls : "calls as (caller persona)"
     voices |o--o{ calls : "used in"
     scam_scenarios ||--o{ calls : "scenario"
-    calls ||--o{ call_turns : "transcript"
     calls ||--o| call_results : "result"
 ```
 
@@ -232,22 +230,6 @@ create index calls_account_id_created_at_idx on public.calls(account_id, created
 create index calls_recipient_profile_id_idx on public.calls(recipient_profile_id);
 ```
 
-### `call_turns` (transcript)
-
-```sql
-create table public.call_turns (
-  id            bigint generated always as identity primary key,
-  call_id       uuid not null references public.calls(id) on delete cascade,
-  turn_index    int not null,
-  speaker       call_speaker not null,
-  text          text not null,
-  started_ms    int,                               -- offset from call start
-  latency_ms    int,                               -- AI response latency (for perf testing)
-  created_at    timestamptz not null default now(),
-  unique (call_id, turn_index)
-);
-```
-
 ### `call_results` (GetCallDetails)
 
 ```sql
@@ -281,7 +263,6 @@ alter table public.profile_consents enable row level security;
 alter table public.voices           enable row level security;
 alter table public.scam_scenarios   enable row level security;
 alter table public.calls            enable row level security;
-alter table public.call_turns       enable row level security;
 alter table public.call_results     enable row level security;
 
 -- accounts: a user can only see/edit their own row
@@ -300,9 +281,6 @@ create policy "own calls (read)" on public.calls
 create policy "own consents (read)" on public.profile_consents
   for select using (exists (select 1 from public.profiles p
                             where p.id = profile_id and p.account_id = auth.uid()));
-create policy "own call turns (read)" on public.call_turns
-  for select using (exists (select 1 from public.calls c
-                            where c.id = call_id and c.account_id = auth.uid()));
 create policy "own call results (read)" on public.call_results
   for select using (exists (select 1 from public.calls c
                             where c.id = call_id and c.account_id = auth.uid()));
@@ -312,7 +290,7 @@ create policy "read active scenarios" on public.scam_scenarios
   for select to authenticated using (is_active);
 ```
 
-Writes to `calls`, `profile_consents`, `call_turns` and `call_results` go through the backend only
+Writes to `calls`, `profile_consents` and `call_results` go through the backend only
 (no insert/update policies for clients).
 
 ### Storage buckets
@@ -350,7 +328,9 @@ Writes to `calls`, `profile_consents`, `call_turns` and `call_results` go throug
 | `POST /voices` (trainVoice) | `profiles` | Storage, `voices` |
 | `POST /calls` | `profiles`, `profile_consents`, `voices`, `scam_scenarios` | `calls` |
 | `GET /calls` | `calls`, `call_results` (score/outcome) | – |
-| `GET /calls/{id}` | `calls`, `call_turns`, `call_results` | – |
-| Twilio webhooks | `calls` | `calls`, `call_turns`, `call_results`, `profile_consents` |
+| `GET /scam_scenarios` | `scam_scenarios` | – |
+| `POST /scam_scenarios` | - | `scam_scenarios` |
+| `PUT /scam_scenarios/{id}` | `scam_scenarios` | `scam_scenarios` (modying the scam scenario such as scam type etc.) |
+| Twilio webhooks | `calls` | `calls`, `call_results`, `profile_consents` |
 
 ---
