@@ -1,25 +1,40 @@
-# api
+# Backend api
 
 <!-- Edited from the default template readme -->
 
 The backend API for the project, built with FastAPI.
 
-## Quick Start
+## Development
 
-First, [download uv](https://docs.astral.sh/uv/getting-started/installation/). 
+Requires [uv](https://docs.astral.sh/uv/getting-started/installation/) and Python >= 3.14 (which uv can install).
 
-### Start the development server
-
-```bash
+```powershell
+uv sync
 uv run fastapi dev
 ```
 
-- Visit http://localhost:8000 for the API.
-- Visit http://localhost:8000/docs for API docs.
-- Visit http://localhost:8000/openapi.json for OpenAPI schema.
+- API: <http://localhost:8000>
+- API docs: <http://localhost:8000/docs>
+- Health: <http://localhost:8000/health>
+- OpenAPI schema: <http://localhost:8000/openapi.json>
 
+To run tests, `uv run pytest`.
 
-## Developing with FastAPI
+## Current State
 
-- [FastAPI Documentation](https://fastapi.tiangolo.com)
-- [FastAPI Cloud](https://fastapicloud.com)
+Basic skeleton with provisional contracts:
+Business routes live under `/api/v1` and return `501 Not Implemented`.
+Authentication is also a stub; protected routes accept no credentials yet.
+
+## Structure
+
+```text
+main.py             Development entry point
+app/main.py         Application factory
+app/core/           Configuration, authentication, and shared errors
+app/api/            Router registration, health, and shared schemas
+app/modules/        Feature routers and request/response schemas
+app/integrations/   External service placeholders
+tests/              Automated testing with pytest
+```
+

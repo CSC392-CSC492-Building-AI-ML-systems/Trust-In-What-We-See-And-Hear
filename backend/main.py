@@ -1,6 +1,5 @@
-from fastapi import FastAPI
-app = FastAPI()
+"""Development entry point for ``uv run fastapi dev``."""
 
-@app.get("/")
-def main():
-    return {"message": "Hello World"}
+from app.main import app
+
+__all__ = ["app"]
