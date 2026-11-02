@@ -1,10 +1,11 @@
 # Database Schema (Draft / Mock)
 
-> Status: **draft**. 
+> Status: **Draft, pending team review**. Updated for the friends and consent-based direction.
 
-Database: **Supabase (Postgres)**. Auth: **Supabase Auth** (`auth.users`).
-Binary files (voice samples, call recordings) live in **Supabase Storage**, and the tables
-only store the storage path.
+Database: **Supabase (Postgres)**. Auth: **Supabase Auth** (`auth.users`), which issues the JWT
+returned by `Login`. There is no session table in our schema.
+Binary files (voice samples, Chatterbox `.pt` files, call recordings) live in **Supabase Storage**,
+and the tables only store the storage path.
 
 ---
 
@@ -12,74 +13,75 @@ only store the storage path.
 
 | Table | Purpose | Main endpoints |
 |---|---|---|
-| `auth.users` | Managed by Supabase Auth (email, password hash, sessions) | `Login`, `Register` |
-| `accounts` | App-level data for each user (name, privacy policy acceptance, settings) | `Register` |
-| `profiles` | People under an account: family members, employees, or the user themself. A profile can **receive** calls and/or be the **persona a call comes from** | `GetProfiles`, `AddProfile`, `EditProfile`, `DeleteProfile` |
-| `profile_consents` | Consent records for a profile's phone number. Calls are only allowed to verified, consenting numbers | `AuthenticateProfile` |
-| `voices` | Cloned voices (ElevenLabs), each attached to a profile | `trainVoice` |
-| `scam_scenarios` | Catalog of scam types and scripts the AI pipeline uses | `CreateCall` (picked when creating a call) |
-| `calls` | One row per simulated scam call | `CreateCall`, `GetCallHistory`, `GetCallDetails` |
-| `call_turns` | Transcript of a call, one row per utterance | `GetCallDetails` |
+| `auth.users` | Managed by Supabase Auth (email, password hash) | `Login`, `Register` |
+| `users` | App-level profile for each user (name, ID verification, onboarding answers) | `Register`, `VerifyUser`, `finishOnboarding`, `getUserInfo`, `editUserInfo` |
+| `friendships` | Friend requests and accepted friendships between two users | `sendFriendRequest`, `acceptFriendRequest`, `declineFriendRequest`, `getFriendsList`, `removeFriend` |
+| `voices` | Each user's own cloned voice (Chatterbox `.pt` file) | `trainVoice` |
+| `scam_consents` | Time-limited permission from a friend to use their profile and voice | `RequestConsent`, `AcceptConsent`, `DeclineConsent`, `getConsents` |
+| `scam_scenarios` | Built-in and user-created scam scripts the AI pipeline uses | `addScenario`, `removeScenario`, `UpdateScenario` |
+| `calls` | One row per simulated scam call | `GetCallHistory`, `GetCallDetails` |
 | `call_results` | Post-call score, summary and feedback | `GetCallDetails` |
 
 ### Entity relationships
 
 ```mermaid
 erDiagram
-    auth_users ||--|| accounts : "has"
-    accounts ||--o{ profiles : "owns"
-    profiles ||--o{ profile_consents : "consent history"
-    profiles ||--o{ voices : "has voice"
-    accounts ||--o{ calls : "creates"
-    profiles ||--o{ calls : "receives (recipient)"
-    profiles |o--o{ calls : "calls as (caller persona)"
-    voices |o--o{ calls : "used in"
-    scam_scenarios ||--o{ calls : "scenario"
-    calls ||--o{ call_turns : "transcript"
+    auth_users ||--|| users : "has"
+    users ||--o{ friendships : "sends request"
+    users ||--o{ friendships : "receives request"
+    users ||--o| voices : "has voice"
+    users ||--o{ scam_consents : "requests"
+    users ||--o{ scam_consents : "grants"
+    users ||--o{ scam_scenarios : "creates"
+    users ||--o{ calls : "receives (recipient)"
+    users |o--o{ calls : "impersonated in (persona)"
+    scam_consents |o--o{ calls : "authorizes"
+    scam_scenarios |o--o{ calls : "scenario"
     calls ||--o| call_results : "result"
 ```
 
-### How "calling as" a profile works
+### How a call is authorized
 
-A call has two profile references:
+Users practise on themselves. In this example, Alex and Sam are two users. Alex wants to practise
+spotting a scam that uses a clone of their friend Sam's voice:
 
-- `recipient_profile_id`: who gets the phone call (for example, Grandma). Must have active consent.
-- `caller_profile_id` (optional): the persona the scammer pretends to be (for example, the grandchild).
-  If that profile has a ready voice, the user can choose to use it (`voice_id`). If not, a stock
-  ElevenLabs voice is used.
+1. Alex sends a `RequestConsent` request for Sam, which creates a `pending` row in `scam_consents`.
+2. Sam accepts through `AcceptConsent`. The row becomes `accepted`, and `expires_at` is set to a
+   short time from now. Or Sam declines through `DeclineConsent`, and the row becomes `declined`.
+3. `getConsents` returns Alex's accepted consents that have not expired.
+4. Alex chooses which consenting friend to use (here, Sam) and a scenario. The AI then holds the
+   simulated call with Alex, using Sam's voice and profile. Simulated calls do not go through the
+   phone network.
+
+On a simulated call, `user_id` is Alex (who receives the call) and `persona_user_id` is Sam (who is
+being impersonated).
+
+Before starting a simulated call, the backend must check that the consent is `accepted` and not
+expired, that the two users are still friends, and that Sam's voice is `ready`.
 
 ---
 
 ## 2. Enums
 
 ```sql
-create type profile_relationship as enum (
-  'self', 'parent', 'grandparent', 'child', 'grandchild', 'sibling',
-  'spouse_partner', 'other_family', 'friend', 'employee', 'coworker', 'manager', 'other'
-);
+create type friendship_status as enum ('pending', 'accepted');
 
-create type consent_status as enum ('pending', 'granted', 'declined', 'revoked', 'expired');
+create type consent_status as enum ('pending', 'accepted', 'declined');
 
-create type consent_method as enum ('sms_reply', 'verification_link', 'voice_keypress');
-
-create type voice_status as enum ('uploaded', 'training', 'ready', 'failed', 'deleted');
+create type voice_status as enum ('uploaded', 'training', 'ready', 'failed');
 
 create type scam_category as enum (
   'grandparent_emergency', 'executive_impersonation', 'bank_fraud_alert',
   'government_agency', 'tech_support', 'romance', 'prize_lottery', 'other'
 );
 
-create type call_status as enum (
-  'queued', 'ringing', 'in_progress', 'completed', 'no_answer', 'busy', 'failed', 'canceled'
-);
-
-create type call_speaker as enum ('ai_caller', 'recipient', 'system');
+create type call_status as enum ('queued', 'in_progress', 'completed', 'failed', 'canceled');
 
 create type call_outcome as enum (
   'recognized_scam',      -- hung up / called it out / verified identity
   'partially_complied',   -- shared some info but stopped before money/credentials
   'fully_complied',       -- agreed to send money or shared sensitive info
-  'inconclusive'          -- call too short or no answer
+  'inconclusive'          -- call too short to grade
 );
 ```
 
@@ -87,17 +89,21 @@ create type call_outcome as enum (
 
 ## 3. Tables
 
-### `accounts`
+### `users`
 
 One row per Supabase Auth user, created at registration.
 
 ```sql
-create table public.accounts (
+create table public.users (
   id                        uuid primary key references auth.users(id) on delete cascade,
+  username                  text unique not null,  -- how friends find each other
   display_name              text not null,
-  account_type              text not null default 'individual'
-                              check (account_type in ('individual', 'family', 'organization')),
-  organization_name         text,
+  preferred_language        text not null default 'en',
+  verified_at               timestamptz,           -- null = ID not verified (VerifyUser)
+  onboarding_completed_at   timestamptz,           -- null = onboarding not finished (finishOnboarding)
+  -- Answers used to tailor the scenario. Null if never given or removed by the user.
+  -- e.g. {"city": "Toronto", "pet_name": "Max", "school": "UofT"}
+  onboarding_answers        jsonb,
   privacy_policy_version    text not null,
   privacy_policy_accepted_at timestamptz not null,
   created_at                timestamptz not null default now(),
@@ -105,121 +111,130 @@ create table public.accounts (
 );
 ```
 
-Notes: email and password are in `auth.users`, not duplicated here.
+Notes:
 
-### `profiles`
+- Email and password are in `auth.users`, not duplicated here.
+- Removing onboarding answers through `editUserInfo` sets `onboarding_answers` to null but keeps
+  `onboarding_completed_at`, so the user is not sent back through onboarding.
+- ID documents are not stored here. `verified_at` only records that verification passed.
 
-```sql
-create table public.profiles (
-  id                uuid primary key default gen_random_uuid(),
-  account_id        uuid not null references public.accounts(id) on delete cascade,
-  full_name         text not null,
-  nickname          text,                          -- what the persona would be called ("Grandma", "Bobby")
-  relationship      profile_relationship not null default 'other',
-  phone_number      text check (phone_number ~ '^\+[1-9][0-9]{6,14}$'),  -- E.164 format
-  preferred_language text not null default 'en',
-  -- Surface-level personal details used to tailor the scenario. Keep minimal (privacy).
-  -- e.g. {"city": "Toronto", "pet_name": "Max", "school": "UofT"}
-  personal_details  jsonb not null default '{}'::jsonb,
-  notes             text,
-  created_at        timestamptz not null default now(),
-  updated_at        timestamptz not null default now(),
-  unique (account_id, phone_number)
-);
+### `friendships`
 
-create index profiles_account_id_idx on public.profiles(account_id);
-```
+One row per pair of users, whichever of them sent the request.
 
-### `profile_consents` (AuthenticateProfile)
-
-Proposed practical flow:
-
-1. User adds a profile with a phone number, then calls `AuthenticateProfile` (POST).
-2. Backend creates a `pending` row and sends a Twilio SMS to that number: _"[Name] wants to send you
-   practice scam calls through <App>. Reply YES to agree, or STOP to decline."_ (or a one-time link).
-3. The Twilio webhook (or link) updates the row to `granted` / `declined`.
-4. `CreateCall` checks for a `granted`, non-expired, non-revoked consent before dialing.
-5. The recipient can text STOP at any time, which sets the consent to `revoked`.
-
-Consent should **not** say when the call will happen (so the practice call stays realistic), but it
-must make clear the recipient agrees to receive simulated calls.
+- `sendFriendRequest` inserts a `pending` row.
+- `acceptFriendRequest` sets it to `accepted`, which puts each user on the other's friends list.
+- `declineFriendRequest` and `removeFriend` delete the row, so the users can send a new request later.
 
 ```sql
-create table public.profile_consents (
-  id                uuid primary key default gen_random_uuid(),
-  profile_id        uuid not null references public.profiles(id) on delete cascade,
-  phone_number      text not null,                 -- number that consented (snapshot)
-  status            consent_status not null default 'pending',
-  method            consent_method not null default 'sms_reply',
-  verification_token_hash text,                    -- for link-based consent; store the hash only
-  twilio_message_sid text,
-  requested_at      timestamptz not null default now(),
-  responded_at      timestamptz,
-  expires_at        timestamptz,                   -- e.g. consent valid for 12 months
-  revoked_at        timestamptz
+create table public.friendships (
+  id            uuid primary key default gen_random_uuid(),
+  requester_id  uuid not null references public.users(id) on delete cascade,
+  addressee_id  uuid not null references public.users(id) on delete cascade,
+  status        friendship_status not null default 'pending',
+  created_at    timestamptz not null default now(),
+  accepted_at   timestamptz,
+  check (requester_id <> addressee_id)
 );
 
-create index profile_consents_profile_id_idx on public.profile_consents(profile_id);
+-- Only one row per pair, in either direction
+create unique index friendships_pair_idx on public.friendships (
+  least(requester_id, addressee_id), greatest(requester_id, addressee_id)
+);
+create index friendships_requester_id_idx on public.friendships(requester_id);
+create index friendships_addressee_id_idx on public.friendships(addressee_id);
 ```
 
 ### `voices` (trainVoice)
 
+One voice per user. Training again replaces the existing row's files.
+
+`trainVoice` takes an mp3, generates a Chatterbox `.pt` file, and stores it linked to the requesting
+user. It only ever trains the requesting user's own voice. Friends get access through
+`scam_consents`, and never receive the file itself.
+
 ```sql
 create table public.voices (
   id                    uuid primary key default gen_random_uuid(),
-  account_id            uuid not null references public.accounts(id) on delete cascade,
-  profile_id            uuid not null references public.profiles(id) on delete cascade,
-  label                 text,                      -- e.g. "Bobby - phone recording"
-  sample_storage_path   text not null,             -- Supabase Storage: voice-samples/{account_id}/{voice_id}.wav
+  user_id               uuid unique not null references public.users(id) on delete cascade,
+  sample_storage_path   text,                      -- Supabase Storage: voice-samples/{user_id}/{voice_id}.mp3
   sample_duration_seconds numeric(6,2),
-  elevenlabs_voice_id   text unique,               -- set once training completes
+  model_storage_path    text,                      -- Supabase Storage: voice-models/{user_id}/{voice_id}.pt, set once training completes
   status                voice_status not null default 'uploaded',
   error_message         text,
-  -- Owner of the voice must agree to it being cloned
+  -- User confirms the sample is their own voice and agrees to it being cloned
   voice_owner_consent_at timestamptz not null,
   created_at            timestamptz not null default now(),
   updated_at            timestamptz not null default now()
 );
-
-create index voices_profile_id_idx on public.voices(profile_id);
 ```
 
-### `scam_scenarios`
+### `scam_consents` (RequestConsent, AcceptConsent, DeclineConsent, getConsents)
 
-Shared, read-only catalog (managed by the team, not by users).
+`expires_at` is set when the consent is accepted. Expiry is worked out by comparing `expires_at` to
+the current time, so no scheduled job is needed. An available consent is one where
+`status = 'accepted' and expires_at > now()`.
+
+```sql
+create table public.scam_consents (
+  id            uuid primary key default gen_random_uuid(),
+  requester_id  uuid not null references public.users(id) on delete cascade,  -- who will receive the call
+  consenter_id  uuid not null references public.users(id) on delete cascade,  -- whose profile and voice are used
+  status        consent_status not null default 'pending',
+  requested_at  timestamptz not null default now(),
+  responded_at  timestamptz,
+  expires_at    timestamptz,
+  check (requester_id <> consenter_id),
+  check (status <> 'accepted' or expires_at is not null)
+);
+
+-- Only one unanswered request at a time for each requester and friend
+create unique index scam_consents_one_pending_idx on public.scam_consents(requester_id, consenter_id)
+  where status = 'pending';
+create index scam_consents_requester_id_idx on public.scam_consents(requester_id, status);
+create index scam_consents_consenter_id_idx on public.scam_consents(consenter_id, status);
+```
+
+### `scam_scenarios` (addScenario, removeScenario, UpdateScenario)
+
+Rows with a null `created_by` are built-in scenarios managed by the team. Users can only edit or
+delete scenarios they created, and those scenarios are visible only to their creator.
 
 ```sql
 create table public.scam_scenarios (
   id              uuid primary key default gen_random_uuid(),
-  slug            text unique not null,            -- e.g. 'grandchild-bail'
+  created_by      uuid references public.users(id) on delete cascade,  -- null = built-in
   title           text not null,
   category        scam_category not null,
   difficulty      smallint not null default 2 check (difficulty between 1 and 3),
-  description     text not null,                   -- shown to the user when creating a call
+  description     text not null,                   -- shown to the user when choosing a scenario
   system_prompt   text not null,                   -- OpenAI prompt for the scammer agent
   red_flags       jsonb not null default '[]'::jsonb, -- ["urgency", "secrecy request", "gift cards"]
   max_duration_seconds int not null default 300,
   is_active       boolean not null default true,
-  created_at      timestamptz not null default now()
+  created_at      timestamptz not null default now(),
+  updated_at      timestamptz not null default now()
 );
+
+create index scam_scenarios_created_by_idx on public.scam_scenarios(created_by);
 ```
 
-### `calls` (CreateCall, GetCallHistory)
+### `calls` (GetCallHistory, GetCallDetails)
+
+`consent_id`, `persona_user_id` and `scenario_id` are nullable so that call history survives when
+those rows are deleted. The backend requires all three when it creates a call.
 
 ```sql
 create table public.calls (
   id                    uuid primary key default gen_random_uuid(),
-  account_id            uuid not null references public.accounts(id) on delete cascade,
-  recipient_profile_id  uuid references public.profiles(id) on delete set null,
-  caller_profile_id     uuid references public.profiles(id) on delete set null,
-  voice_id              uuid references public.voices(id) on delete set null,
-  scenario_id           uuid not null references public.scam_scenarios(id),
-  -- snapshots so history still reads well if a profile is deleted
-  recipient_name        text not null,
-  recipient_phone_number text not null,
-  twilio_call_sid       text unique,
+  user_id               uuid not null references public.users(id) on delete cascade,  -- who receives the call
+  persona_user_id       uuid references public.users(id) on delete set null,          -- who is impersonated
+  consent_id            uuid references public.scam_consents(id) on delete set null,
+  scenario_id           uuid references public.scam_scenarios(id) on delete set null,
+  -- snapshots so history still reads well if a user or scenario is deleted
+  persona_name          text not null,
+  scenario_title        text not null,
   status                call_status not null default 'queued',
-  scheduled_for         timestamptz,               -- null = call now (supports monthly practice later)
   started_at            timestamptz,
   ended_at              timestamptz,
   duration_seconds      int,
@@ -228,24 +243,10 @@ create table public.calls (
   created_at            timestamptz not null default now()
 );
 
-create index calls_account_id_created_at_idx on public.calls(account_id, created_at desc);
-create index calls_recipient_profile_id_idx on public.calls(recipient_profile_id);
-```
-
-### `call_turns` (transcript)
-
-```sql
-create table public.call_turns (
-  id            bigint generated always as identity primary key,
-  call_id       uuid not null references public.calls(id) on delete cascade,
-  turn_index    int not null,
-  speaker       call_speaker not null,
-  text          text not null,
-  started_ms    int,                               -- offset from call start
-  latency_ms    int,                               -- AI response latency (for perf testing)
-  created_at    timestamptz not null default now(),
-  unique (call_id, turn_index)
-);
+create index calls_user_id_created_at_idx on public.calls(user_id, created_at desc);
+create index calls_persona_user_id_idx on public.calls(persona_user_id);
+create index calls_consent_id_idx on public.calls(consent_id);
+create index calls_scenario_id_idx on public.calls(scenario_id);
 ```
 
 ### `call_results` (GetCallDetails)
@@ -270,87 +271,105 @@ create table public.call_results (
 
 ## 4. Row Level Security
 
-The FastAPI backend uses the **service role key** for pipeline work (Twilio webhooks, writing
-transcripts/results). RLS still protects direct client access and any queries made with the
-user's JWT.
+All writes go through the FastAPI backend, which uses the **service role key** after checking the
+user's JWT. Clients get read-only policies. This stops a user from using their own JWT to write
+directly to Supabase and, for example, set their own `verified_at`, accept a consent on a friend's
+behalf, or mark a voice as `ready`.
 
 ```sql
-alter table public.accounts         enable row level security;
-alter table public.profiles         enable row level security;
-alter table public.profile_consents enable row level security;
-alter table public.voices           enable row level security;
-alter table public.scam_scenarios   enable row level security;
-alter table public.calls            enable row level security;
-alter table public.call_turns       enable row level security;
-alter table public.call_results     enable row level security;
+alter table public.users          enable row level security;
+alter table public.friendships    enable row level security;
+alter table public.voices         enable row level security;
+alter table public.scam_consents  enable row level security;
+alter table public.scam_scenarios enable row level security;
+alter table public.calls          enable row level security;
+alter table public.call_results   enable row level security;
 
--- accounts: a user can only see/edit their own row
-create policy "own account" on public.accounts
-  for all using (id = auth.uid()) with check (id = auth.uid());
+-- users: a user can only read their own row (this includes onboarding answers)
+create policy "own user (read)" on public.users
+  for select using (id = auth.uid());
 
--- profiles / voices / calls: owned directly by account_id
-create policy "own profiles" on public.profiles
-  for all using (account_id = auth.uid()) with check (account_id = auth.uid());
-create policy "own voices" on public.voices
-  for all using (account_id = auth.uid()) with check (account_id = auth.uid());
+-- friendships / consents: readable by either user involved
+create policy "own friendships (read)" on public.friendships
+  for select using (auth.uid() in (requester_id, addressee_id));
+create policy "own consents (read)" on public.scam_consents
+  for select using (auth.uid() in (requester_id, consenter_id));
+
+-- voices / calls: owned directly by user_id
+create policy "own voice (read)" on public.voices
+  for select using (user_id = auth.uid());
 create policy "own calls (read)" on public.calls
-  for select using (account_id = auth.uid());
+  for select using (user_id = auth.uid());
 
--- child tables: owned through their parent
-create policy "own consents (read)" on public.profile_consents
-  for select using (exists (select 1 from public.profiles p
-                            where p.id = profile_id and p.account_id = auth.uid()));
-create policy "own call turns (read)" on public.call_turns
-  for select using (exists (select 1 from public.calls c
-                            where c.id = call_id and c.account_id = auth.uid()));
+-- child table: owned through its parent
 create policy "own call results (read)" on public.call_results
   for select using (exists (select 1 from public.calls c
-                            where c.id = call_id and c.account_id = auth.uid()));
+                            where c.id = call_id and c.user_id = auth.uid()));
 
--- scenarios: any signed-in user can read active scenarios
-create policy "read active scenarios" on public.scam_scenarios
-  for select to authenticated using (is_active);
+-- scenarios: any signed-in user can read active built-in scenarios and their own
+create policy "read scenarios" on public.scam_scenarios
+  for select to authenticated
+  using ((created_by is null and is_active) or created_by = auth.uid());
 ```
 
-Writes to `calls`, `profile_consents`, `call_turns` and `call_results` go through the backend only
-(no insert/update policies for clients).
+Friends cannot read each other's `users` rows through RLS, because policies apply to whole rows and
+would expose onboarding answers. `getFriendsList` returns only the safe fields
+through the backend.
 
 ### Storage buckets
 
 | Bucket | Path | Access |
 |---|---|---|
-| `voice-samples` (private) | `{account_id}/{voice_id}.wav` | owner only |
-| `call-recordings` (private) | `{account_id}/{call_id}.mp3` | owner only; deleted after retention period |
+| `voice-samples` (private) | `{user_id}/{voice_id}.mp3` | owner only |
+| `voice-models` (private) | `{user_id}/{voice_id}.pt` | backend only; never sent to a client |
+| `call-recordings` (private) | `{user_id}/{call_id}.mp3` | owner only; deleted after retention period |
 
 ---
 
 ## 5. Data retention & deletion (proposal)
 
-- **Delete profile** cascades to its consents and voices. The backend also deletes the voice from
-  ElevenLabs and the sample from Storage. Past calls stay, but `recipient_profile_id` is set to null
-  and keep only the name/number snapshot. (Open question: should we also scrub the phone number?)
-- **Delete account** cascades to everything under `accounts`.
-- **Call recordings**: deleted after 30 days (scheduled job). Transcripts and results are kept until
-  the user deletes them.
-- **Voice samples**: deleted from Storage once ElevenLabs training is `ready`.
+- **Delete user** cascades to their friendships, voice, consents, scenarios and the calls they
+  received. The backend also deletes their files from Storage. On other users' calls that
+  impersonated them, `persona_user_id` and `consent_id` become null and only the `persona_name`
+  snapshot remains.
+- **Remove friend** deletes the `friendships` row. Any open consents stop being usable, because the
+  backend checks the friendship before starting a call.
+- **Delete scenario** sets `scenario_id` to null on past calls, which keep the `scenario_title`
+  snapshot.
+- **Call recordings**: deleted after 30 days (scheduled job). Results are kept until the user deletes
+  them.
+- **Voice samples**: deleted from Storage once training is `ready`, which sets
+  `sample_storage_path` to null. The `.pt` file is kept until the user retrains or is deleted.
 
 ---
 
 ## 6. Endpoint to table mapping
 
+Every endpoint requires a valid JWT except `Register` and `Login`.
+
 | Endpoint | Reads | Writes |
 |---|---|---|
-| `POST /register` | – | `auth.users` (Supabase), `accounts` |
-| `POST /login` | `auth.users` (Supabase) | – |
-| `GET /profiles` | `profiles`, latest `profile_consents`, `voices` | – |
-| `POST /profiles` | – | `profiles` |
-| `PUT /profiles/{id}` | `profiles` | `profiles` (changing the phone number resets consent) |
-| `DELETE /profiles/{id}` | `voices` | `profiles` (cascade) |
-| `POST /profiles/{id}/consent` | `profiles` | `profile_consents` |
-| `POST /voices` (trainVoice) | `profiles` | Storage, `voices` |
-| `POST /calls` | `profiles`, `profile_consents`, `voices`, `scam_scenarios` | `calls` |
-| `GET /calls` | `calls`, `call_results` (score/outcome) | – |
-| `GET /calls/{id}` | `calls`, `call_turns`, `call_results` | – |
-| Twilio webhooks | `calls` | `calls`, `call_turns`, `call_results`, `profile_consents` |
+| `POST Register` | – | `auth.users` (Supabase), `users` |
+| `POST Login` | `auth.users` (Supabase) | – |
+| `POST VerifyUser` | `users` | `users.verified_at` |
+| `POST finishOnboarding` | `users` | `users.onboarding_answers`, `users.onboarding_completed_at` |
+| `GET getUserInfo` | `users`, `voices` | – |
+| `PUT editUserInfo` | `users` | `users` (not `verified_at` or `onboarding_completed_at`) |
+| `POST sendFriendRequest` | `users`, `friendships` | `friendships` |
+| `POST acceptFriendRequest` | `friendships` | `friendships` (addressee only) |
+| `POST declineFriendRequest` | `friendships` | `friendships` (deletes row; addressee only) |
+| `GET getFriendsList` | `friendships`, `users` (safe fields) | – |
+| `DEL removeFriend` | `friendships` | `friendships` (deletes row) |
+| `POST RequestConsent` | `friendships`, `voices` | `scam_consents` |
+| `POST AcceptConsent` | `scam_consents`, `friendships` | `scam_consents` (consenter only; sets `expires_at`) |
+| `POST DeclineConsent` | `scam_consents` | `scam_consents` (consenter only) |
+| `GET getConsents` | `scam_consents`, `users` (safe fields) | – |
+| `GET GetCallHistory` | `calls`, `call_results` (score/outcome) | – |
+| `GET GetCallDetails` | `calls`, `call_results` | – |
+| `POST trainVoice` | `voices` | Storage, `voices` |
+| `POST addScenario` | – | `scam_scenarios` |
+| `PUT UpdateScenario` | `scam_scenarios` | `scam_scenarios` (creator only) |
+| `DEL removeScenario` | `scam_scenarios` | `scam_scenarios` (creator only) |
+| Call pipeline (backend) | `calls` | `calls`, `call_results` |
 
 ---
