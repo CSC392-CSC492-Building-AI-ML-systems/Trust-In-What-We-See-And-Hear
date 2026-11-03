@@ -20,6 +20,11 @@ uv run fastapi dev
 
 To run tests, `uv run pytest`.
 
+## API Reference
+
+The generated docs at `/docs` are the API reference. Document endpoints in route docstrings and schema `Field` descriptions, and API-wide conventions in `app/api/openapi.py`.
+Mark undecided behavior as **TBD** rather than describing a guess.
+
 ## Current State
 
 Basic skeleton with provisional contracts:

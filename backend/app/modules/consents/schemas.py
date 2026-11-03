@@ -18,5 +18,6 @@ class ConsentResponse(BaseModel):
     recipient_user_id: UUID
     status: Literal["pending", "accepted", "declined"]
     expires_at: AwareDatetime | None = Field(
-        default=None, description="Server-controlled expiry."
+        default=None,
+        description="When the consent stops being usable. Set by the server on acceptance.",
     )

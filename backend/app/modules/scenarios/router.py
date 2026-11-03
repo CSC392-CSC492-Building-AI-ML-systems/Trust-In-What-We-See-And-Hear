@@ -4,7 +4,7 @@ from uuid import UUID
 from fastapi import APIRouter, Query
 
 from app.api.schemas import Page, Pagination
-from app.core.errors import not_implemented
+from app.core.errors import NOT_FOUND_RESPONSES, not_implemented
 from app.modules.scenarios.schemas import ScenarioCreate, ScenarioResponse, ScenarioUpdate
 
 router = APIRouter(prefix="/scenarios", tags=["Scenarios"])
@@ -22,16 +22,16 @@ async def get_scenarios(
     not_implemented("Scenario listing")
 
 
-@router.get("/{id}", response_model=ScenarioResponse)
+@router.get("/{id}", response_model=ScenarioResponse, responses=NOT_FOUND_RESPONSES)
 async def get_scenario(id: UUID) -> ScenarioResponse:
     not_implemented("Scenario retrieval")
 
 
-@router.put("/{id}", response_model=ScenarioResponse)
+@router.put("/{id}", response_model=ScenarioResponse, responses=NOT_FOUND_RESPONSES)
 async def update_scenario(id: UUID, payload: ScenarioUpdate) -> ScenarioResponse:
     not_implemented("Scenario editing")
 
 
-@router.delete("/{id}", status_code=204)
+@router.delete("/{id}", status_code=204, responses=NOT_FOUND_RESPONSES)
 async def remove_scenario(id: UUID) -> None:
     not_implemented("Scenario deletion")

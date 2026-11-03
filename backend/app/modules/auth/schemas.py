@@ -16,7 +16,7 @@ class RegisterRequest(LoginRequest):
 
 
 class TokenResponse(BaseModel):
-    access_token: str
+    access_token: str = Field(description="Supabase JWT.")
     token_type: Literal["bearer"] = "bearer"
 
 

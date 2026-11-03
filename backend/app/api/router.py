@@ -3,7 +3,7 @@
 from fastapi import APIRouter, Depends
 
 from app.core.auth import get_current_user
-from app.core.errors import NOT_IMPLEMENTED_RESPONSES
+from app.core.errors import NOT_IMPLEMENTED_RESPONSES, UNAUTHORIZED_RESPONSES
 from app.modules.auth.router import router as auth_router
 from app.modules.calls.router import router as calls_router
 from app.modules.consents.router import router as consents_router
@@ -16,7 +16,9 @@ from app.modules.voice_training.router import router as voice_training_router
 router = APIRouter(prefix="/api/v1", responses=NOT_IMPLEMENTED_RESPONSES)
 router.include_router(auth_router)
 
-protected_router = APIRouter(dependencies=[Depends(get_current_user)])
+protected_router = APIRouter(
+    dependencies=[Depends(get_current_user)], responses=UNAUTHORIZED_RESPONSES
+)
 for feature_router in (
     users_router,
     verification_router,

@@ -11,7 +11,10 @@ from app.core.errors import not_implemented
 
 bearer_scheme = HTTPBearer(
     scheme_name="SupabaseBearer",
-    description="Supabase JWT access token. Token validation is not implemented.",
+    description=(
+        "Supabase JWT access token from `POST /api/v1/auth/login`. "
+        "Token validation is not implemented."
+    ),
     auto_error=False,
 )
 
