@@ -21,3 +21,10 @@ export default function OnboardingPage() {
     </main>
   );
 }
+
+
+// Onboarding questions:
+// Age rage
+// Interests
+// technological literacy / how active on social media
+// language / occupation?
