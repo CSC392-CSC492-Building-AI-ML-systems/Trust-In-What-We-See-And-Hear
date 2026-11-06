@@ -3,6 +3,7 @@
 import { ArrowRight, LockKeyhole, ShieldCheck } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { FormEvent, useState } from "react";
+import { SESSION_COOKIE_NAME } from "@/lib/auth";
 
 type AuthMode = "login" | "register";
 
@@ -14,7 +15,7 @@ export function AuthPanel() {
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-
+    document.cookie = `${SESSION_COOKIE_NAME}=test; Path=/; SameSite=Lax`
     if (mode === "register") {
       setError("Registration will be available when authentication is connected.");
       return;
@@ -22,16 +23,16 @@ export function AuthPanel() {
 
     setError("");
     setIsSubmitting(true);
-
+    
     try {
-      const response = await fetch("/api/auth/test-session", {
-        method: "POST",
-      });
+      //const response = await fetch("/api/auth/test-session", {
+      //  method: "POST",
+      //});
 
-      if (!response.ok) {
-        throw new Error("Unable to start the test session.");
-      }
-
+      //if (!response.ok) {
+      //  throw new Error("Unable to start the test session.");
+      //}
+      
       router.replace("/verify-identity");
       router.refresh();
     } catch {
