@@ -1,9 +1,16 @@
 # Database Schema (Draft / Mock)
 
 > Status: **Draft, pending team review**. Updated for the friends and consent-based direction.
+>
+> The SQL below is applied by the migrations in [`migrations/`](migrations/), which are the source
+> of truth. When the schema changes, add a new migration and update this document to match (see
+> [README.md](README.md)).
 
-Database: **Supabase (Postgres)**. Auth: **Supabase Auth** (`auth.users`), which issues the JWT
-returned by `Login`. There is no session table in our schema.
+Database: **Supabase (Postgres)**. Auth: **Supabase Auth** (`auth.users`). The frontend signs users
+up and in (email and password; no other providers for now) directly with Supabase, and sends
+the resulting access token (a JWT) to the backend, which verifies it. The backend has no login or
+registration endpoints and there is no session table in our schema. See
+[docs/authentication.md](../docs/authentication.md).
 Binary files (voice samples, Chatterbox `.pt` files, call recordings) live in **Supabase Storage**,
 and the tables only store the storage path.
 
@@ -13,8 +20,8 @@ and the tables only store the storage path.
 
 | Table | Purpose | Main endpoints |
 |---|---|---|
-| `auth.users` | Managed by Supabase Auth (email, password hash) | `Login`, `Register` |
-| `users` | App-level profile for each user (name, ID verification, onboarding answers) | `Register`, `VerifyUser`, `finishOnboarding`, `getUserInfo`, `editUserInfo` |
+| `auth.users` | Managed by Supabase Auth (email, password hash) | None (Supabase Auth on the client) |
+| `users` | App-level profile for each user (name, ID verification, onboarding answers) | `finishOnboarding`, `VerifyUser`, `getUserInfo`, `editUserInfo` |
 | `friendships` | Friend requests and accepted friendships between two users | `sendFriendRequest`, `acceptFriendRequest`, `declineFriendRequest`, `getFriendsList`, `removeFriend` |
 | `voices` | Each user's own cloned voice (Chatterbox `.pt` file) | `trainVoice` |
 | `scam_consents` | Time-limited permission from a friend to use their profile and voice | `RequestConsent`, `AcceptConsent`, `DeclineConsent`, `getConsents` |
@@ -91,7 +98,21 @@ create type call_outcome as enum (
 
 ### `users`
 
-One row per Supabase Auth user, created at registration.
+One row per Supabase Auth user who has finished onboarding. Sign-up goes straight from the frontend
+to Supabase, and only the backend writes to this table (see [Row Level Security](#4-row-level-security)),
+so `finishOnboarding`, the first backend call after sign-up, creates the row with the username,
+display name and privacy policy acceptance. A signed-in user with no row has not finished
+onboarding, and `getUserInfo` returns `404` for them.
+
+We keep this table instead of relying on `auth.users` alone because:
+
+- The `auth` schema is not exposed through Supabase's API, and we must not expose other users'
+  emails anyway. Friends find each other by `username` and see `display_name` from this table.
+- Every other table references `users(id)`, so a user must have a profile before they can add
+  friends, train a voice or receive calls.
+- Supabase `user_metadata` can be changed by the user themselves (`supabase.auth.updateUser`), so
+  it cannot hold trusted fields such as `verified_at`. This table is written only by the backend
+  (see [Row Level Security](#4-row-level-security)).
 
 ```sql
 create table public.users (
@@ -345,14 +366,13 @@ through the backend.
 
 ## 6. Endpoint to table mapping
 
-Every endpoint requires a valid JWT except `Register` and `Login`.
+Every endpoint requires a valid Supabase access token. Sign-up and sign-in are not backend endpoints;
+the frontend calls Supabase Auth directly, which writes `auth.users`.
 
 | Endpoint | Reads | Writes |
 |---|---|---|
-| `POST Register` | – | `auth.users` (Supabase), `users` |
-| `POST Login` | `auth.users` (Supabase) | – |
 | `POST VerifyUser` | `users` | `users.verified_at` |
-| `POST finishOnboarding` | `users` | `users.onboarding_answers`, `users.onboarding_completed_at` |
+| `POST finishOnboarding` | `users` | `users` (creates the row: `username`, `display_name`, privacy policy acceptance, `onboarding_answers`, `onboarding_completed_at`) |
 | `GET getUserInfo` | `users`, `voices` | – |
 | `PUT editUserInfo` | `users` | `users` (not `verified_at` or `onboarding_completed_at`) |
 | `POST sendFriendRequest` | `users`, `friendships` | `friendships` |
