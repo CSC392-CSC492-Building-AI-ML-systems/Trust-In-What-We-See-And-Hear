@@ -30,9 +30,9 @@ def test_openapi_documents_tags_and_errors(client):
     assert operation_tags <= {tag["name"] for tag in schema["tags"]}
 
     protected = schema["paths"]["/api/v1/users/me"]["get"]["responses"]
-    public = schema["paths"]["/api/v1/auth/login"]["post"]["responses"]
     assert "401" in protected
-    assert "401" not in public
+    assert "503" in protected
+    assert "security" not in schema["paths"]["/health"]["get"]
     assert "404" in schema["paths"]["/api/v1/calls/{id}"]["get"]["responses"]
 
 
