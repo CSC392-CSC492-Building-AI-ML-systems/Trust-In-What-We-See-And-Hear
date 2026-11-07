@@ -85,14 +85,16 @@ class SupabaseAuth:
 
 async def get_supabase_auth(request: Request) -> AsyncIterator[SupabaseAuth]:
     settings = request.app.state.settings
-    if not settings.supabase_url or settings.supabase_publishable_key is None:
+    # An empty env var (e.g. `SUPABASE_PUBLISHABLE_KEY=`) gives SecretStr(""), not None.
+    publishable_key = (
+        settings.supabase_publishable_key.get_secret_value()
+        if settings.supabase_publishable_key is not None
+        else ""
+    )
+    if not settings.supabase_url or not publishable_key:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Authentication is not configured.",
         )
     async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS) as client:
-        yield SupabaseAuth(
-            settings.supabase_url,
-            settings.supabase_publishable_key.get_secret_value(),
-            client,
-        )
+        yield SupabaseAuth(settings.supabase_url, publishable_key, client)
