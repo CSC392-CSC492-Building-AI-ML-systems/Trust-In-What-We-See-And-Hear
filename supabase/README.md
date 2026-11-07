@@ -24,7 +24,7 @@ Integration settings this relies on (**Project Settings → Integrations → Git
 
 | Migration | What it does |
 |---|---|
-| `0001_migration1.sql` | Initial schema: enums, tables, indexes and Row Level Security |
+| `0001_migration1.sql` | Initial schema: enums, tables, indexes, `updated_at` triggers and Row Level Security |
 
 ## Making a schema change
 

@@ -31,8 +31,10 @@ Basic skeleton with provisional contracts:
 Business routes live under `/api/v1` and return `501 Not Implemented`.
 Authentication is handled by Supabase Auth: the frontend signs users up and in (email and
 password) with supabase-js and sends the session's access token as
-`Authorization: Bearer <token>`. The backend only verifies that token with Supabase. Copy `.env.example` to `.env` and set
-`SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY`; without them, protected routes return `503`.
+`Authorization: Bearer <token>`. The backend only verifies that token with Supabase.
+Two-factor authentication is required: tokens from password-only sessions get `403`.
+Copy `.env.example` to `.env` and set `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY`;
+without them, protected routes return `503`.
 See [docs/authentication.md](../docs/authentication.md) for Supabase setup and the frontend flow.
 
 ## Structure

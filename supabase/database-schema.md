@@ -71,6 +71,7 @@ expired, that the two users are still friends, and that Sam's voice is `ready`.
 ## 2. Enums
 
 ```sql
+-- No 'declined': declining a request or removing a friend deletes the row.
 create type friendship_status as enum ('pending', 'accepted');
 
 create type consent_status as enum ('pending', 'accepted', 'declined');
@@ -121,7 +122,6 @@ create table public.users (
   display_name              text not null,
   preferred_language        text not null default 'en',
   verified_at               timestamptz,           -- null = ID not verified (VerifyUser)
-  onboarding_completed_at   timestamptz,           -- null = onboarding not finished (finishOnboarding)
   -- Answers used to tailor the scenario. Null if never given or removed by the user.
   -- e.g. {"city": "Toronto", "pet_name": "Max", "school": "UofT"}
   onboarding_answers        jsonb,
@@ -135,8 +135,9 @@ create table public.users (
 Notes:
 
 - Email and password are in `auth.users`, not duplicated here.
-- Removing onboarding answers through `editUserInfo` sets `onboarding_answers` to null but keeps
-  `onboarding_completed_at`, so the user is not sent back through onboarding.
+- There is no "onboarding completed" column: the row only exists once onboarding is finished, so
+  `created_at` is when it finished. Removing onboarding answers through `editUserInfo` sets
+  `onboarding_answers` to null but keeps the row, so the user is not sent back through onboarding.
 - ID documents are not stored here. `verified_at` only records that verification passed.
 
 ### `friendships`
@@ -288,14 +289,43 @@ create table public.call_results (
 );
 ```
 
+### `updated_at` trigger
+
+`users`, `voices` and `scam_scenarios` have an `updated_at` column. A trigger sets it on every
+update, so the backend never has to.
+
+```sql
+create function public.set_updated_at()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$;
+
+create trigger users_set_updated_at
+  before update on public.users
+  for each row execute function public.set_updated_at();
+create trigger voices_set_updated_at
+  before update on public.voices
+  for each row execute function public.set_updated_at();
+create trigger scam_scenarios_set_updated_at
+  before update on public.scam_scenarios
+  for each row execute function public.set_updated_at();
+```
+
 ---
 
 ## 4. Row Level Security
 
 All writes go through the FastAPI backend, which uses the **service role key** after checking the
-user's JWT. Clients get read-only policies. This stops a user from using their own JWT to write
-directly to Supabase and, for example, set their own `verified_at`, accept a consent on a friend's
-behalf, or mark a voice as `ready`.
+user's JWT. Clients get read-only policies, and only when signed in (`to authenticated`), so
+anonymous requests made with just the publishable key can read nothing. This stops a user from
+using their own JWT to write directly to Supabase and, for example, set their own `verified_at`,
+accept a consent on a friend's behalf, or mark a voice as `ready`.
 
 ```sql
 alter table public.users          enable row level security;
@@ -308,24 +338,25 @@ alter table public.call_results   enable row level security;
 
 -- users: a user can only read their own row (this includes onboarding answers)
 create policy "own user (read)" on public.users
-  for select using (id = auth.uid());
+  for select to authenticated using (id = auth.uid());
 
 -- friendships / consents: readable by either user involved
 create policy "own friendships (read)" on public.friendships
-  for select using (auth.uid() in (requester_id, addressee_id));
+  for select to authenticated using (auth.uid() in (requester_id, addressee_id));
 create policy "own consents (read)" on public.scam_consents
-  for select using (auth.uid() in (requester_id, consenter_id));
+  for select to authenticated using (auth.uid() in (requester_id, consenter_id));
 
 -- voices / calls: owned directly by user_id
 create policy "own voice (read)" on public.voices
-  for select using (user_id = auth.uid());
+  for select to authenticated using (user_id = auth.uid());
 create policy "own calls (read)" on public.calls
-  for select using (user_id = auth.uid());
+  for select to authenticated using (user_id = auth.uid());
 
 -- child table: owned through its parent
 create policy "own call results (read)" on public.call_results
-  for select using (exists (select 1 from public.calls c
-                            where c.id = call_id and c.user_id = auth.uid()));
+  for select to authenticated
+  using (exists (select 1 from public.calls c
+                 where c.id = call_id and c.user_id = auth.uid()));
 
 -- scenarios: any signed-in user can read active built-in scenarios and their own
 create policy "read scenarios" on public.scam_scenarios
@@ -372,9 +403,9 @@ the frontend calls Supabase Auth directly, which writes `auth.users`.
 | Endpoint | Reads | Writes |
 |---|---|---|
 | `POST VerifyUser` | `users` | `users.verified_at` |
-| `POST finishOnboarding` | `users` | `users` (creates the row: `username`, `display_name`, privacy policy acceptance, `onboarding_answers`, `onboarding_completed_at`) |
+| `POST finishOnboarding` | `users` | `users` (creates the row: `username`, `display_name`, privacy policy acceptance, `onboarding_answers`) |
 | `GET getUserInfo` | `users`, `voices` | – |
-| `PUT editUserInfo` | `users` | `users` (not `verified_at` or `onboarding_completed_at`) |
+| `PUT editUserInfo` | `users` | `users` (not `verified_at`) |
 | `POST sendFriendRequest` | `users`, `friendships` | `friendships` |
 | `POST acceptFriendRequest` | `friendships` | `friendships` (addressee only) |
 | `POST declineFriendRequest` | `friendships` | `friendships` (deletes row; addressee only) |

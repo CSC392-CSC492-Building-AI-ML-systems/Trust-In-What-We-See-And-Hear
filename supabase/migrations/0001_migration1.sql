@@ -5,6 +5,7 @@
 -- Enums
 -- ---------------------------------------------------------------------------
 
+-- No 'declined': declining a request or removing a friend deletes the row.
 create type public.friendship_status as enum ('pending', 'accepted');
 
 create type public.consent_status as enum ('pending', 'accepted', 'declined');
@@ -35,7 +36,6 @@ create table public.users (
   display_name              text not null,
   preferred_language        text not null default 'en',
   verified_at               timestamptz,           -- null = ID not verified (VerifyUser)
-  onboarding_completed_at   timestamptz,           -- null = onboarding not finished (finishOnboarding)
   -- Answers used to tailor the scenario. Null if never given or removed by the user.
   -- e.g. {"city": "Toronto", "pet_name": "Max", "school": "UofT"}
   onboarding_answers        jsonb,
@@ -173,10 +173,36 @@ create table public.call_results (
 );
 
 -- ---------------------------------------------------------------------------
+-- updated_at: kept current on every update, so the backend never sets it
+-- ---------------------------------------------------------------------------
+
+create function public.set_updated_at()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$;
+
+create trigger users_set_updated_at
+  before update on public.users
+  for each row execute function public.set_updated_at();
+create trigger voices_set_updated_at
+  before update on public.voices
+  for each row execute function public.set_updated_at();
+create trigger scam_scenarios_set_updated_at
+  before update on public.scam_scenarios
+  for each row execute function public.set_updated_at();
+
+-- ---------------------------------------------------------------------------
 -- Row Level Security
 --
 -- All writes go through the backend with the secret (service role) key, which
--- bypasses RLS. Clients only get the read policies below.
+-- bypasses RLS. Clients only get the read policies below, and only when signed
+-- in (`to authenticated`); anonymous requests can read nothing.
 -- ---------------------------------------------------------------------------
 
 alter table public.users          enable row level security;
@@ -189,24 +215,25 @@ alter table public.call_results   enable row level security;
 
 -- users: a user can only read their own row (this includes onboarding answers)
 create policy "own user (read)" on public.users
-  for select using (id = auth.uid());
+  for select to authenticated using (id = auth.uid());
 
 -- friendships / consents: readable by either user involved
 create policy "own friendships (read)" on public.friendships
-  for select using (auth.uid() in (requester_id, addressee_id));
+  for select to authenticated using (auth.uid() in (requester_id, addressee_id));
 create policy "own consents (read)" on public.scam_consents
-  for select using (auth.uid() in (requester_id, consenter_id));
+  for select to authenticated using (auth.uid() in (requester_id, consenter_id));
 
 -- voices / calls: owned directly by user_id
 create policy "own voice (read)" on public.voices
-  for select using (user_id = auth.uid());
+  for select to authenticated using (user_id = auth.uid());
 create policy "own calls (read)" on public.calls
-  for select using (user_id = auth.uid());
+  for select to authenticated using (user_id = auth.uid());
 
 -- child table: owned through its parent
 create policy "own call results (read)" on public.call_results
-  for select using (exists (select 1 from public.calls c
-                            where c.id = call_id and c.user_id = auth.uid()));
+  for select to authenticated
+  using (exists (select 1 from public.calls c
+                 where c.id = call_id and c.user_id = auth.uid()));
 
 -- scenarios: any signed-in user can read active built-in scenarios and their own
 create policy "read scenarios" on public.scam_scenarios

@@ -7,14 +7,15 @@ Authentication is handled by **Supabase Auth**. The backend has no login or regi
 - For every backend request, the frontend sends the session's access token:
   `Authorization: Bearer <access_token>`.
 - The **backend** verifies the token with Supabase and takes the user ID from it. A missing, invalid
-  or expired token gets `401`.
+  or expired token gets `401`; a temporary problem reaching Supabase gets `503` (see
+  [section 3](#3-backend-contract)).
 - The app profile (`public.users`) is created by the backend when the user finishes onboarding. A
   signed-in user without a profile gets `404` from `GET /api/v1/users/me` and should be sent to
   onboarding. See [database-schema.md](../supabase/database-schema.md#users) for why the table exists.
-- **Multi-factor authentication (MFA)** with an authenticator app (TOTP) must be supported. TOTP is
-  already enabled in the Supabase project; the app needs a setup screen, a code prompt at login
-  (section 2.9) and a backend check (section 3). Whether MFA is optional or required for every
-  user is **TBD**.
+- **Two-factor authentication (MFA) is required for every user**, using an authenticator app
+  (TOTP). TOTP is enabled in the Supabase project. The backend rejects any session where the user
+  has not entered their authenticator code with `403 mfa_required`, so the frontend needs a setup
+  screen and a code prompt at login ([section 2.9](#29-two-factor-authentication-mfa-required)).
 
 ```text
 Browser ──sign up / sign in──▶ Supabase Auth
@@ -236,9 +237,12 @@ export const config = {
 
 Optionally, redirect signed-in users away from `/` to `/dashboard`.
 
-This proxy also needs the MFA redirect from [2.9](#29-multi-factor-authentication-mfa).
+This proxy also needs the two-factor redirects from
+[2.9](#29-two-factor-authentication-mfa-required).
 
-Then delete `SESSION_COOKIE_NAME` (`lib/auth.ts`) and the call to `/api/auth/test-session`.
+Then remove the placeholder session: in `components/auth-panel.tsx`, the `document.cookie` line
+that sets a fake `scamai_session` cookie and the commented-out `/api/auth/test-session` call; and
+`SESSION_COOKIE_NAME` in `lib/auth.ts`.
 
 ### 2.4 Sign in, sign up and password reset (`components/auth-panel.tsx`)
 
@@ -388,7 +392,13 @@ export async function apiFetch(path: string, init: RequestInit = {}) {
 `getSession()` is fine here because it only fetches the token to forward. The backend verifies it.
 Do not use `getSession()` to decide whether a user is signed in. Use `getClaims()` or `getUser()`.
 
-If a request returns `401`, the session has ended. Send the user to `/`.
+How to handle the backend's auth errors (see [section 3](#3-backend-contract)):
+
+- `401`: the session has ended. Send the user to `/`.
+- `403` with `detail.code === "mfa_required"`: the user has not entered their authenticator code
+  this session. Send them to `/mfa`; do not sign them out. The proxy (2.9) normally stops this
+  before any request is made.
+- `503`: temporary. Show an error, but keep the user signed in.
 
 ### 2.7 Current user and onboarding
 
@@ -402,6 +412,10 @@ export async function getCurrentUser() {
   const response = await apiFetch("/api/v1/users/me");
 
   if (response.status === 401) return null;     // signed out
+  if (response.status === 403) {
+    const body = await response.json();
+    if (body.detail?.code === "mfa_required") redirect("/mfa"); // code not entered this session
+  }
   if (response.status === 404) redirect("/onboarding"); // signed in, no profile yet
   if (!response.ok) throw new Error("Unable to retrieve the current user.");
 
@@ -409,9 +423,10 @@ export async function getCurrentUser() {
 }
 ```
 
-The `(app)` layout already redirects to `/` when this returns `null`. The response shape follows
-the backend's `UserProfileResponse` (see `/docs` on the backend), not `first_name`/`last_name`.
-Show `display_name` in the sidebar.
+The `(app)` layout already redirects to `/` when this returns `null`. A `503` throws here, which
+shows the error page without signing the user out. The response shape follows the backend's
+`UserProfileResponse` (see `/docs` on the backend), not `first_name`/`last_name`. Its profile fields
+are still **TBD**; once `display_name` is included, show it in the sidebar.
 
 `GET /users/me` still returns `501` until the backend implements it. Until then, the layout can read
 the signed-in user straight from Supabase:
@@ -442,27 +457,57 @@ router.replace("/");
 router.refresh();
 ```
 
-### 2.9 Multi-factor authentication (MFA)
+### 2.9 Two-factor authentication (MFA, required)
 
-Supabase MFA uses authenticator apps (TOTP: Google Authenticator, 1Password, Authy, …). A session
-has an **assurance level**:
+Every user must use an authenticator app (TOTP: Google Authenticator, 1Password, Authy, …). A
+session has an **assurance level**:
 
 - `aal1`: signed in with email and password only.
 - `aal2`: signed in with email and password **and** a code from the authenticator app.
 
-After `signInWithPassword`, a user who has set up MFA is only at `aal1` until they enter a code.
-The app must ask for it before letting them in.
+The backend only accepts `aal2` tokens; anything else gets `403 mfa_required`. So these screens are
+needed for the app to work at all:
 
-> **TBD: optional or required.** If MFA is optional, users turn it on in Settings. If it is
-> required, every user must set it up (for example right after onboarding) before using the app.
-> The steps below cover both; the difference is only in the proxy redirect.
+- **New user:** sign up → confirm email → set up an authenticator (`/mfa/setup`) → onboarding → app.
+- **Returning user:** sign in → enter the code (`/mfa`) → app.
 
-**Set up MFA (e.g. `app/(app)/settings/security`, or `/mfa/setup` if required)**
+**Redirects in `proxy.ts`**
+
+After the `getClaims()` check in section 2.3, send every signed-in user who is not yet at `aal2` to
+the right page. Without this, a user could skip the code screen by typing another URL.
+
+```ts
+const path = request.nextUrl.pathname;
+const mfaRoutes = new Set(["/mfa", "/mfa/setup"]);
+
+if (isSignedIn && !publicRoutes.has(path) && !mfaRoutes.has(path)) {
+  const { data: aal } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+
+  if (aal?.currentLevel !== "aal2") {
+    // nextLevel is "aal2" only if the user already has an authenticator.
+    const url = new URL(aal?.nextLevel === "aal2" ? "/mfa" : "/mfa/setup", request.url);
+    url.searchParams.set("next", path); // come back here afterwards
+    return NextResponse.redirect(url);
+  }
+}
+```
+
+`/auth/confirm` is left out on purpose: it must run first so the email link signs the user in.
+
+**Set up an authenticator (`app/mfa/setup/page.tsx`)**
 
 ```ts
 const supabase = createClient(); // lib/supabase/client
 
-// 1. Create the factor and show its QR code.
+// 1. Remove any setup the user started earlier but did not finish.
+const { data: factors } = await supabase.auth.mfa.listFactors();
+for (const factor of factors?.all ?? []) {
+  if (factor.status === "unverified") {
+    await supabase.auth.mfa.unenroll({ factorId: factor.id });
+  }
+}
+
+// 2. Create the factor and show its QR code.
 const { data, error } = await supabase.auth.mfa.enroll({
   factorType: "totp",
   friendlyName: "Authenticator app",
@@ -470,28 +515,17 @@ const { data, error } = await supabase.auth.mfa.enroll({
 // <img src={data.totp.qr_code} alt="Scan with your authenticator app" />
 // Also show data.totp.secret for users who cannot scan the code.
 
-// 2. The user enters the 6-digit code from their app to confirm it works.
+// 3. The user enters the 6-digit code from their app to confirm it works.
 const { error: verifyError } = await supabase.auth.mfa.challengeAndVerify({
   factorId: data.id,
   code,
 });
-// Success: MFA is on, and the session is now aal2.
+// Success: the session is now aal2.
+router.replace(safeNext(searchParams.get("next"))); // e.g. /onboarding for a new user
+router.refresh();
 ```
-
-If the user cancels before entering a code, remove the unfinished factor:
-`await supabase.auth.mfa.unenroll({ factorId: data.id })`.
 
 **Ask for the code at login (`app/mfa/page.tsx`)**
-
-After a successful `signInWithPassword`, check the assurance level (section 2.4's login handler
-should redirect here instead of `/dashboard` when this applies):
-
-```ts
-const { data: aal } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
-const needsCode = aal?.currentLevel === "aal1" && aal?.nextLevel === "aal2";
-```
-
-On `/mfa`, verify the code against the user's authenticator factor:
 
 ```ts
 const { data: factors } = await supabase.auth.mfa.listFactors();
@@ -507,58 +541,39 @@ if (error) {
   return;
 }
 
-router.replace("/dashboard");
+router.replace(safeNext(searchParams.get("next")));
 router.refresh();
 ```
 
-**Enforce it in `proxy.ts`**
+`safeNext` is the same same-site check as in section 2.5. Both pages should also have a **Sign out**
+button (section 2.8), for users who are stuck, e.g. without their phone.
 
-Without this, a user at `aal1` could skip `/mfa` by typing another URL. After the `getClaims()`
-check in section 2.3, add:
+**Backup authenticator (Settings)**
 
-```ts
-if (isSignedIn) {
-  const { data: aal } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
-  const path = request.nextUrl.pathname;
+Supabase has no backup codes. Encourage users to add a second authenticator (another phone or a
+password manager) from Settings, using the same `enroll` and `challengeAndVerify` calls as setup.
+Supabase only allows this from an `aal2` session.
 
-  // Has MFA set up but has not entered a code this session.
-  if (aal?.currentLevel === "aal1" && aal?.nextLevel === "aal2" && path !== "/mfa") {
-    return NextResponse.redirect(new URL("/mfa", request.url));
-  }
-
-  // Only if MFA is required: has not set it up yet.
-  // if (aal?.nextLevel === "aal1" && path !== "/mfa/setup") {
-  //   return NextResponse.redirect(new URL("/mfa/setup", request.url));
-  // }
-}
-```
-
-**Turn MFA off (Settings, optional MFA only)**
-
-```ts
-await supabase.auth.mfa.unenroll({ factorId });
-```
-
-Supabase only allows this from an `aal2` session, so the user must have entered a code first.
-
-**Lost authenticator.** Supabase has no backup codes. Encourage users to add a second authenticator
-(the project allows several per user). Otherwise, a team member can remove the factor in the
-Supabase dashboard under **Authentication → Users → (user)**, after confirming who they are.
+**Lost authenticator.** If a user has lost every authenticator, a team member removes their factors
+in the Supabase dashboard (**Authentication → Users → (user)**) after confirming who they are. On
+their next sign-in, the proxy sends them to `/mfa/setup`.
 
 ### 2.10 Checklist
 
 - [ ] `@supabase/supabase-js` and `@supabase/ssr` installed, `.env.local` filled in
 - [ ] `lib/supabase/client.ts` and `lib/supabase/server.ts`
-- [ ] `proxy.ts` uses Supabase; `SESSION_COOKIE_NAME` and `test-session` removed
+- [ ] `proxy.ts` uses Supabase; the placeholder `scamai_session` cookie and `SESSION_COOKIE_NAME` removed
 - [ ] Log in, register and forgot password in `auth-panel.tsx`
 - [ ] `app/auth/confirm/route.ts`
 - [ ] `/reset-password` page
-- [ ] `lib/api.ts`; `getCurrentUser` calls the backend and handles `401` and `404`
+- [ ] `lib/api.ts`; `getCurrentUser` calls the backend and handles `401`, `403 mfa_required` and `404`
 - [ ] Onboarding collects username, display name and privacy policy acceptance (terms checkbox moved there)
 - [ ] Sign out in the sidebar
-- [ ] MFA setup screen (QR code, confirm code, cancel removes the factor)
-- [ ] `/mfa` code prompt after login, and the MFA redirect in `proxy.ts`
-- [ ] Turn MFA off in Settings (if MFA is optional)
+- [ ] Two-factor redirects in `proxy.ts` (`/mfa` or `/mfa/setup`, with `next`)
+- [ ] `/mfa/setup` (QR code, confirm code, removes unfinished setups)
+- [ ] `/mfa` code prompt after sign-in
+- [ ] Sign out on both MFA pages
+- [ ] Add a backup authenticator in Settings
 
 ---
 
@@ -567,14 +582,18 @@ Supabase dashboard under **Authentication → Users → (user)**, after confirmi
 - Every `/api/v1` route requires `Authorization: Bearer <access_token>`. `/health` does not.
 - `401`: the token is missing, invalid or expired. The frontend should sign the user out or send
   them to `/`.
-- `503`: the backend cannot reach Supabase or is missing its Supabase settings.
+- `403` with `{"detail": {"code": "mfa_required", ...}}`: the token is valid, but it comes from a
+  session where the user has not entered their authenticator code (`aal1`). Two-factor
+  authentication is required for every user, so the backend only accepts `aal2` tokens. Send the
+  user to `/mfa` (or `/mfa/setup`); **do not sign them out**.
+- `503`: a temporary problem on the backend's side: Supabase is unreachable, rate limiting
+  (`429`) or returned an unexpected response, or the backend is missing its Supabase settings.
+  This says nothing about the token, so **do not sign the user out**; show an error and let them
+  retry.
 - The user is always taken from the token. Never send a user ID to act as.
 - `GET /api/v1/users/me` returns `404` for a signed-in user without a profile *(planned)*.
-- `POST /api/v1/users/me/onboarding` creates the profile *(planned; body TBD)*.
-- **MFA** *(planned)*: the backend will reject `aal1` tokens with `401` for users who have set up
-  MFA, so a password alone is never enough to call the API. If MFA becomes required, it will reject
-  every `aal1` token. Until this is built, the frontend checks in section 2.9 are the only
-  enforcement.
+- `POST /api/v1/users/me/onboarding` creates the profile and returns it with `201` *(planned; body
+  TBD)*.
 
 Full API reference: `http://localhost:8000/docs` while the backend is running.
 
@@ -588,19 +607,19 @@ Full API reference: `http://localhost:8000/docs` while the backend is running.
 4. Register at `http://localhost:3000`. With email confirmation on, use a team member's email (the
    built-in sender only delivers to them) and click the link.
 5. Check **Authentication → Users** in the Supabase dashboard: the user is there.
-6. To call the backend by hand, get an access token. Either temporarily log
-   `session.access_token` in `apiFetch`, or sign in with curl:
-
-   ```bash
-   curl -s "https://<project-ref>.supabase.co/auth/v1/token?grant_type=password" \
-     -H "apikey: <publishable key>" -H "Content-Type: application/json" \
-     -d '{"email": "you@example.com", "password": "..."}'
-   ```
-
-   Then call the backend with the `access_token` from the response:
+6. Set up an authenticator when the app asks (`/mfa/setup`), then check the user has an MFA factor
+   in the Supabase dashboard.
+7. To call the backend by hand, get an access token from a session that entered the authenticator
+   code: temporarily log `session.access_token` in `apiFetch` after signing in through the app. Then:
 
    ```bash
    curl -i http://localhost:8000/api/v1/users/me -H "Authorization: Bearer <token>"
    ```
 
-   Anything except `401` means the token was accepted. `501` is expected until the endpoint is built.
+   - `501`: the token was accepted (expected until the endpoint is built).
+   - `403` `mfa_required`: the token is valid but password-only (`aal1`). A token from signing in
+     with curl (`/auth/v1/token?grant_type=password`) always gets this, which is a quick way to
+     check that two-factor authentication is enforced.
+   - `401`: the token was rejected.
+   - `503`: the backend could not check the token; make sure `backend/.env` has the Supabase
+     values and that the project is reachable.

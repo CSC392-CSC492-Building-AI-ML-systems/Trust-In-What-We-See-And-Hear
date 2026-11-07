@@ -13,7 +13,6 @@ class UpdateProfileRequest(RequestModel):
 
 class UserProfileResponse(BaseModel):
     user_id: UUID
-    onboarding_completed: bool
     fields: dict[str, JsonValue] = Field(description=PROFILE_FIELDS_DESCRIPTION)
 
 
@@ -21,7 +20,3 @@ class OnboardingRequest(RequestModel):
     answers: dict[str, JsonValue] = Field(
         description="Answers to the onboarding questions. The question set is TBD."
     )
-
-
-class OnboardingResponse(BaseModel):
-    onboarding_completed: bool
