@@ -24,6 +24,9 @@ def make_token(**claims):
 
 AAL2_TOKEN = make_token(sub=str(USER_ID), aal="aal2")
 
+# Any protected route that is still a stub works; it returns 501 once authenticated.
+PROTECTED_URL = "/api/v1/calls"
+
 
 class SupabaseMock:
     """Set `handler` in a test to control what the mocked Supabase Auth returns."""
@@ -50,7 +53,7 @@ def supabase_client(application, client, supabase):
 
 
 def test_auth_unconfigured_returns_503(client):
-    response = client.get("/api/v1/users/me", headers={"Authorization": "Bearer t"})
+    response = client.get(PROTECTED_URL, headers={"Authorization": "Bearer t"})
     assert response.status_code == 503
 
 
@@ -67,7 +70,7 @@ def test_auth_empty_settings_return_503(supabase_url, publishable_key):
     )
     with TestClient(create_app(settings)) as client:
         response = client.get(
-            "/api/v1/users/me", headers={"Authorization": "Bearer t"}
+            PROTECTED_URL, headers={"Authorization": "Bearer t"}
         )
     assert response.status_code == 503
     # Rejected before any request to Supabase is made.
@@ -75,7 +78,7 @@ def test_auth_empty_settings_return_503(supabase_url, publishable_key):
 
 
 def test_protected_route_requires_token(supabase_client):
-    response = supabase_client.get("/api/v1/users/me")
+    response = supabase_client.get(PROTECTED_URL)
     assert response.status_code == 401
 
 
@@ -84,7 +87,7 @@ def test_protected_route_rejects_invalid_token(supabase_client, supabase):
         403, json={"error_code": "bad_jwt", "msg": "invalid JWT"}
     )
     response = supabase_client.get(
-        "/api/v1/users/me", headers={"Authorization": "Bearer bad"}
+        PROTECTED_URL, headers={"Authorization": "Bearer bad"}
     )
     assert response.status_code == 401
 
@@ -97,7 +100,7 @@ def test_protected_route_accepts_valid_token(supabase_client, supabase):
 
     supabase.handler = handler
     response = supabase_client.get(
-        "/api/v1/users/me", headers={"Authorization": f"Bearer {AAL2_TOKEN}"}
+        PROTECTED_URL, headers={"Authorization": f"Bearer {AAL2_TOKEN}"}
     )
     # Authentication passed; the profile route itself is still a stub.
     assert response.status_code == 501
@@ -109,7 +112,7 @@ def test_protected_route_when_supabase_is_down(supabase_client, supabase):
 
     supabase.handler = handler
     response = supabase_client.get(
-        "/api/v1/users/me", headers={"Authorization": "Bearer good"}
+        PROTECTED_URL, headers={"Authorization": "Bearer good"}
     )
     assert response.status_code == 503
 
@@ -138,7 +141,7 @@ def test_protected_route_with_malformed_supabase_response(
 ):
     supabase.handler = lambda request: httpx.Response(supabase_status, json=body)
     response = supabase_client.get(
-        "/api/v1/users/me", headers={"Authorization": "Bearer good"}
+        PROTECTED_URL, headers={"Authorization": "Bearer good"}
     )
     assert response.status_code == 503
 
@@ -155,7 +158,7 @@ def test_protected_route_with_malformed_supabase_response(
 def test_token_rejection_is_401_whatever_the_body(supabase_client, supabase, response):
     supabase.handler = lambda request: response
     result = supabase_client.get(
-        "/api/v1/users/me", headers={"Authorization": "Bearer bad"}
+        PROTECTED_URL, headers={"Authorization": "Bearer bad"}
     )
     assert result.status_code == 401
 
@@ -174,7 +177,7 @@ def test_token_rejection_is_401_whatever_the_body(supabase_client, supabase, res
 def test_non_token_errors_are_503(supabase_client, supabase, response):
     supabase.handler = lambda request: response
     result = supabase_client.get(
-        "/api/v1/users/me", headers={"Authorization": "Bearer good"}
+        PROTECTED_URL, headers={"Authorization": "Bearer good"}
     )
     assert result.status_code == 503
 
@@ -192,7 +195,7 @@ def test_non_token_errors_are_503(supabase_client, supabase, response):
 def test_valid_token_without_mfa_is_403(supabase_client, supabase, token):
     supabase.handler = lambda request: httpx.Response(200, json={"id": str(USER_ID)})
     response = supabase_client.get(
-        "/api/v1/users/me", headers={"Authorization": f"Bearer {token}"}
+        PROTECTED_URL, headers={"Authorization": f"Bearer {token}"}
     )
     assert response.status_code == 403
     assert response.json()["detail"]["code"] == "mfa_required"
@@ -204,6 +207,6 @@ def test_rejected_token_is_401_even_if_it_claims_aal2(supabase_client, supabase)
         403, json={"error_code": "bad_jwt", "msg": "invalid JWT"}
     )
     response = supabase_client.get(
-        "/api/v1/users/me", headers={"Authorization": f"Bearer {AAL2_TOKEN}"}
+        PROTECTED_URL, headers={"Authorization": f"Bearer {AAL2_TOKEN}"}
     )
     assert response.status_code == 401

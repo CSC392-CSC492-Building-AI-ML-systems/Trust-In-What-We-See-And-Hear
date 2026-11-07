@@ -53,11 +53,11 @@ NOT_FOUND_RESPONSES: Responses = {
     status.HTTP_404_NOT_FOUND: {"description": "Resource not found."}
 }
 
-AUTH_SERVICE_UNAVAILABLE_RESPONSES: Responses = {
+SERVICE_UNAVAILABLE_RESPONSES: Responses = {
     status.HTTP_503_SERVICE_UNAVAILABLE: {
         "description": (
-            "Authentication is temporarily unavailable: Supabase Auth is not "
-            "configured, unreachable, rate limiting or returned an unexpected "
+            "Supabase (authentication or the database) is temporarily unavailable: "
+            "not configured, unreachable, rate limiting or returned an unexpected "
             "response. Says nothing about the token; retry later."
         )
     }
@@ -86,6 +86,13 @@ def mfa_required() -> NoReturn:
         detail=MfaRequiredDetail(
             message="Two-factor authentication is required."
         ).model_dump(),
+    )
+
+
+def database_unavailable() -> NoReturn:
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="The database is unavailable.",
     )
 
 

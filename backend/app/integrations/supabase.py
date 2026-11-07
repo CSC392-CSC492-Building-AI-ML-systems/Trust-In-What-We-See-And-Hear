@@ -1,4 +1,4 @@
-"""Supabase integration: Auth token verification (database and storage to come).
+"""Supabase integration: Auth token verification and database access (storage to come).
    Code Generated with the help of ClaudeCode.
 """
 
@@ -9,6 +9,7 @@ from uuid import UUID
 
 import httpx
 from fastapi import HTTPException, Request, status
+from pydantic import SecretStr
 
 REQUEST_TIMEOUT_SECONDS = 10.0
 
@@ -27,10 +28,22 @@ class SupabaseAuthError(Exception):
 
 
 class SupabaseUnavailableError(Exception):
-    """Supabase Auth could not be reached, was rate limiting or misbehaved.
+    """Supabase could not be reached, was rate limiting or misbehaved.
 
     Retryable: unlike SupabaseAuthError, it says nothing about the token.
     """
+
+
+class SupabaseConflictError(Exception):
+    """A database write broke a unique constraint (Postgres error 23505)."""
+
+    def __init__(self, constraint: str | None, message: str):
+        super().__init__(message)
+        self.constraint = constraint
+
+
+class SupabaseDatabaseError(Exception):
+    """The database rejected a request for a reason that indicates a bug."""
 
 
 class SupabaseAuth:
@@ -133,14 +146,104 @@ def _json_object_or_empty(response: httpx.Response) -> dict[str, Any]:
     return body if isinstance(body, dict) else {}
 
 
+class SupabaseDatabase:
+    """Minimal client for Supabase's database REST API (PostgREST).
+
+    Uses the secret key, which bypasses Row Level Security, so every query must
+    filter by the authenticated user itself.
+    """
+
+    def __init__(self, url: str, secret_key: str, client: httpx.AsyncClient):
+        self._base_url = f"{url.rstrip('/')}/rest/v1"
+        self._secret_key = secret_key
+        self._client = client
+
+    async def select(
+        self, table: str, filters: dict[str, str], columns: str
+    ) -> list[dict[str, Any]]:
+        """Return the rows matching `filters`, e.g. {"id": "eq.<uuid>"}."""
+        return await self._request("GET", table, params={**filters, "select": columns})
+
+    async def insert(
+        self, table: str, row: dict[str, Any], columns: str
+    ) -> dict[str, Any]:
+        rows = await self._request(
+            "POST",
+            table,
+            params={"select": columns},
+            json=row,
+            headers={"Prefer": "return=representation"},
+        )
+        if len(rows) != 1:
+            raise SupabaseDatabaseError(f"Insert into {table} returned {len(rows)} rows.")
+        return rows[0]
+
+    async def update(
+        self, table: str, filters: dict[str, str], values: dict[str, Any], columns: str
+    ) -> list[dict[str, Any]]:
+        """Update the rows matching `filters` and return them (empty if none matched)."""
+        return await self._request(
+            "PATCH",
+            table,
+            params={**filters, "select": columns},
+            json=values,
+            headers={"Prefer": "return=representation"},
+        )
+
+    async def _request(
+        self,
+        method: str,
+        table: str,
+        *,
+        headers: dict[str, str] | None = None,
+        **kwargs: Any,
+    ) -> list[dict[str, Any]]:
+        try:
+            response = await self._client.request(
+                method,
+                f"{self._base_url}/{table}",
+                headers={
+                    "apikey": self._secret_key,
+                    "Authorization": f"Bearer {self._secret_key}",
+                    **(headers or {}),
+                },
+                timeout=REQUEST_TIMEOUT_SECONDS,
+                **kwargs,
+            )
+        except httpx.HTTPError as exc:
+            raise SupabaseUnavailableError(str(exc)) from exc
+
+        if response.status_code == 429 or response.status_code >= 500:
+            raise SupabaseUnavailableError(f"Supabase returned {response.status_code}.")
+        if response.is_error:
+            error = _json_object_or_empty(response)
+            message = error.get("message") or f"Supabase returned {response.status_code}."
+            if error.get("code") == "23505":
+                raise SupabaseConflictError(_constraint_name(message), message)
+            raise SupabaseDatabaseError(message)
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise SupabaseUnavailableError("Supabase returned invalid JSON.") from exc
+        if not isinstance(body, list) or not all(isinstance(row, dict) for row in body):
+            raise SupabaseUnavailableError("Supabase returned an unexpected response.")
+        return body
+
+
+def _constraint_name(message: str) -> str | None:
+    # e.g. 'duplicate key value violates unique constraint "users_username_key"'
+    parts = message.split('"')
+    return parts[1] if len(parts) >= 3 else None
+
+
+def _secret(value: SecretStr | None) -> str:
+    # An empty env var (e.g. `SUPABASE_PUBLISHABLE_KEY=`) gives SecretStr(""), not None.
+    return value.get_secret_value() if value is not None else ""
+
+
 def get_supabase_auth(request: Request) -> SupabaseAuth:
     settings = request.app.state.settings
-    # An empty env var (e.g. `SUPABASE_PUBLISHABLE_KEY=`) gives SecretStr(""), not None.
-    publishable_key = (
-        settings.supabase_publishable_key.get_secret_value()
-        if settings.supabase_publishable_key is not None
-        else ""
-    )
+    publishable_key = _secret(settings.supabase_publishable_key)
     if not settings.supabase_url or not publishable_key:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -150,3 +253,14 @@ def get_supabase_auth(request: Request) -> SupabaseAuth:
     return SupabaseAuth(
         settings.supabase_url, publishable_key, request.app.state.http_client
     )
+
+
+def get_supabase_db(request: Request) -> SupabaseDatabase:
+    settings = request.app.state.settings
+    secret_key = _secret(settings.supabase_secret_key)
+    if not settings.supabase_url or not secret_key:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="The database is not configured.",
+        )
+    return SupabaseDatabase(settings.supabase_url, secret_key, request.app.state.http_client)

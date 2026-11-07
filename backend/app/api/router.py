@@ -6,9 +6,9 @@ from fastapi import APIRouter, Depends
 
 from app.core.auth import get_current_user
 from app.core.errors import (
-    AUTH_SERVICE_UNAVAILABLE_RESPONSES,
     MFA_REQUIRED_RESPONSES,
     NOT_IMPLEMENTED_RESPONSES,
+    SERVICE_UNAVAILABLE_RESPONSES,
     UNAUTHORIZED_RESPONSES,
 )
 from app.modules.calls.router import router as calls_router
@@ -25,7 +25,7 @@ protected_router = APIRouter(
     dependencies=[Depends(get_current_user)],
     responses=UNAUTHORIZED_RESPONSES
     | MFA_REQUIRED_RESPONSES
-    | AUTH_SERVICE_UNAVAILABLE_RESPONSES,
+    | SERVICE_UNAVAILABLE_RESPONSES,
 )
 for feature_router in (
     users_router,
