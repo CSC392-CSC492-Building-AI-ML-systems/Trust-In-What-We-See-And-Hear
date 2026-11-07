@@ -20,7 +20,7 @@ class NotImplementedResponse(BaseModel):
 NOT_IMPLEMENTED_RESPONSES: Responses = {
     status.HTTP_501_NOT_IMPLEMENTED: {
         "model": NotImplementedResponse,
-        "description": "Authentication or the requested operation is not implemented.",
+        "description": "The requested operation is not implemented.",
     }
 }
 
@@ -32,6 +32,12 @@ NOT_FOUND_RESPONSES: Responses = {
     status.HTTP_404_NOT_FOUND: {"description": "Resource not found."}
 }
 
+AUTH_SERVICE_UNAVAILABLE_RESPONSES: Responses = {
+    status.HTTP_503_SERVICE_UNAVAILABLE: {
+        "description": "Supabase Auth is not configured or could not be reached."
+    }
+}
+
 
 def not_implemented(operation: str) -> NoReturn:
     raise HTTPException(
@@ -39,4 +45,19 @@ def not_implemented(operation: str) -> NoReturn:
         detail=NotImplementedDetail(
             message=f"{operation} is not implemented."
         ).model_dump(),
+    )
+
+
+def auth_service_unavailable() -> NoReturn:
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Authentication service is unavailable.",
+    )
+
+
+def unauthorized(message: str = "Invalid or expired bearer token.") -> NoReturn:
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail=message,
+        headers={"WWW-Authenticate": "Bearer"},
     )
