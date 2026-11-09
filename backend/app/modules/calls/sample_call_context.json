@@ -1,0 +1,19 @@
+{
+  "persona": {
+    "name": "Sam",
+    "relationship": "friend"
+  },
+  "target": {
+    "name": "Alex"
+  },
+  "scenario": {
+    "title": "Phone stolen abroad",
+    "situation": "Your phone and wallet were stolen while travelling, and you are calling from a stranger's phone.",
+    "ask": "$500 sent by e-transfer today so you can get home",
+    "tactics": ["urgency", "secrecy", "guilt"]
+  },
+  "details": {
+    "city": "Mississauga",
+    "school": "UTM"
+  }
+}
