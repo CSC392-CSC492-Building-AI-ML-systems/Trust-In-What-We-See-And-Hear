@@ -393,10 +393,10 @@ through the backend.
 Draft migration `0004_voice_storage_buckets.sql` creates the two voice buckets. They have no
 `storage.objects` policies, so clients cannot read or write them; the backend uses the secret key.
 Each upload gets a new `upload_id`, so a failed upload never overwrites the sample the database
-points to. After a successful upload, the backend deletes the user's files stored before the new
-sample (the replaced sample, anything derived from it, and leftovers of failed requests). Deleting
-the voice deletes the row and its files, then any unreferenced file in the user's folders older
-than 10 minutes (a newer one may belong to an upload still saving its record).
+points to. After a successful upload, the backend deletes the replaced sample and anything derived from it.
+Deleting the voice deletes its files, then the row (so a failed attempt can be retried). Both also
+delete leftovers of failed requests: unreferenced files in the user's folders older than 10
+minutes (a newer one may belong to an upload still saving its record).
 | `call-recordings` (private) | `{user_id}/{call_id}.mp3` | owner only; deleted after retention period |
 
 ---
@@ -414,8 +414,8 @@ than 10 minutes (a newer one may belong to an upload still saving its record).
 - **Call recordings**: deleted after 30 days (scheduled job). Results are kept until the user deletes
   them.
 - **Voice samples**: kept until the user replaces or deletes their voice
-  (`DELETE /api/v1/users/me/voice`, which deletes the row and its files, then older leftovers; it
-  can be repeated until it succeeds). A file left by a failed request is deleted on the user's
+  (`DELETE /api/v1/users/me/voice`, which deletes the files, then the row, then older leftovers;
+  it can be repeated until it succeeds). A file left by a failed request is deleted on the user's
   next upload or delete. **TBD:** a scheduled sweep for users who never come back. **TBD:** whether
   the sample can be deleted once the pipeline is `ready`; with zero-shot cloning the pipeline may
   need it for every call.

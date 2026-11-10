@@ -35,8 +35,9 @@ VOICE_COLUMNS = (
     "sample_storage_path,model_storage_path"
 )
 ONE_VOICE_PER_USER_CONSTRAINT = "voices_user_id_key"
-# Far longer than an upload request can take (Storage and database timeouts),
-# so a file this old with no record pointing to it is a leftover.
+# Far longer than an upload request normally takes, so a file this old with no
+# record pointing to it is a leftover. Not a hard guarantee: a request that
+# keeps making slow progress could take longer.
 LEFTOVER_GRACE = timedelta(minutes=10)
 
 NOT_FOUND = error_responses(
@@ -155,7 +156,9 @@ async def upload_voice_sample(
         raise
 
     try:
-        await _sweep_older_files(storage, settings, user.user_id, sample_path)
+        if existing is not None:
+            await _remove_voice_files(storage, settings, existing)
+        await _sweep_leftovers(storage, settings, user.user_id, keep={sample_path})
     except Exception:
         logger.exception("Could not delete replaced voice files; the next change retries.")
     await voice_pipeline.on_sample_uploaded(UUID(saved["id"]), user.user_id, sample_path)
@@ -182,16 +185,21 @@ async def get_voice(user: CurrentUser, supabase_db: SupabaseDb) -> VoiceResponse
 async def delete_voice(
     request: Request, user: CurrentUser, supabase_db: SupabaseDb, storage: Storage
 ) -> None:
-    """Delete the current user's voice: the record and its stored files.
+    """Delete the current user's voice: its stored files, then the record.
 
-    Safe to repeat: it succeeds when there is no voice. It also deletes files
-    that failed earlier requests left behind, once they are older than a few
-    minutes (newer ones may belong to an upload still in progress). If
-    deleting files fails, it returns `503`; retrying finishes the deletion.
+    Safe to repeat: it succeeds when there is no voice. If deleting files
+    fails, it returns `503` and keeps the record, so retrying finishes the
+    deletion. It also deletes files failed earlier requests left behind, once
+    they are older than a few minutes (newer ones may belong to an upload
+    still in progress).
     """
     settings: Settings = request.app.state.settings
     voice = await _find_voice(supabase_db, user.user_id)
     if voice is not None:
+        # Files first, while the record still names them: if this fails, a retry
+        # finds the same record and deletes them. No other record can point to
+        # them, since every upload has its own path.
+        await _remove_voice_files(storage, settings, voice)
         path = voice["sample_storage_path"]
         deleted = await supabase_db.delete(
             "voices",
@@ -206,32 +214,12 @@ async def delete_voice(
         )
         if not deleted:
             _voice_changed()
-        # No other record can point to these: every upload has its own path.
-        for bucket, file_path in (
-            (settings.voice_samples_bucket, voice["sample_storage_path"]),
-            (settings.voice_models_bucket, voice["model_storage_path"]),
-        ):
-            if file_path:
-                await storage.remove(bucket, [file_path])
 
-    # Leftovers from failed requests. Recent files are kept even if no record
-    # points to them yet: a concurrent upload may be about to save its record.
     current = await _find_voice(supabase_db, user.user_id)
     keep = set() if current is None else {
         current["sample_storage_path"], current["model_storage_path"]
     }
-    cutoff = clock.now() - LEFTOVER_GRACE
-    for bucket in (settings.voice_samples_bucket, settings.voice_models_bucket):
-        objects = await storage.list_folder(bucket, str(user.user_id))
-        stale = [
-            item["path"]
-            for item in objects
-            if item["path"] not in keep
-            and item["created_at"] is not None
-            and datetime.fromisoformat(item["created_at"]) < cutoff
-        ]
-        await storage.remove(bucket, stale)
-
+    await _sweep_leftovers(storage, settings, user.user_id, keep)
 
 async def _find_voice(supabase_db: SupabaseDatabase, user_id: UUID) -> dict[str, Any] | None:
     rows = await supabase_db.select("voices", {"user_id": f"eq.{user_id}"}, VOICE_COLUMNS)
@@ -284,36 +272,36 @@ async def _remove_quietly(storage: SupabaseStorage, bucket: str, path: str) -> N
         logger.exception("Could not delete %s from Storage bucket %s.", path, bucket)
 
 
-async def _sweep_older_files(
-    storage: SupabaseStorage, settings: Settings, user_id: UUID, current_sample: str
+async def _remove_voice_files(
+    storage: SupabaseStorage, settings: Settings, voice: dict[str, Any]
 ) -> None:
-    """Delete the user's files stored before `current_sample`.
-
-    This removes the replaced sample and anything derived from it, and any file
-    an earlier failed request left behind. Files stored after the current
-    sample belong to a concurrent upload, which deletes its own if it fails.
-    """
-    samples = await storage.list_folder(settings.voice_samples_bucket, str(user_id))
-    current = next((item for item in samples if item["path"] == current_sample), None)
-    if current is None or current["created_at"] is None:
-        return
-    cutoff = datetime.fromisoformat(current["created_at"])
-    for bucket, objects in (
-        (settings.voice_samples_bucket, samples),
-        (
-            settings.voice_models_bucket,
-            await storage.list_folder(settings.voice_models_bucket, str(user_id)),
-        ),
+    for bucket, path in (
+        (settings.voice_samples_bucket, voice["sample_storage_path"]),
+        (settings.voice_models_bucket, voice["model_storage_path"]),
     ):
-        older = [
+        if path:
+            await storage.remove(bucket, [path])
+
+
+async def _sweep_leftovers(
+    storage: SupabaseStorage, settings: Settings, user_id: UUID, keep: set[str | None]
+) -> None:
+    """Delete files in the user's folders that failed requests left behind.
+
+    Only files older than LEFTOVER_GRACE are deleted: a newer one may belong to
+    an upload still in progress that has not saved its record yet.
+    """
+    cutoff = clock.now() - LEFTOVER_GRACE
+    for bucket in (settings.voice_samples_bucket, settings.voice_models_bucket):
+        objects = await storage.list_folder(bucket, str(user_id))
+        stale = [
             item["path"]
             for item in objects
-            if item["path"] != current_sample
+            if item["path"] not in keep
             and item["created_at"] is not None
             and datetime.fromisoformat(item["created_at"]) < cutoff
         ]
-        await storage.remove(bucket, older)
-
+        await storage.remove(bucket, stale)
 
 def _to_voice(row: dict[str, Any]) -> VoiceResponse:
     return VoiceResponse(

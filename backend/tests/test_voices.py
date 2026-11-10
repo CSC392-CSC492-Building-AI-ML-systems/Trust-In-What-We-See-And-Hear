@@ -237,13 +237,24 @@ def test_replacing_keeps_files_of_a_newer_concurrent_upload(voice_client, db, st
     db.on("GET", "voices", rows(voice_row(sample_storage_path=OLD_SAMPLE)))
 
     def patch_while_another_upload_lands(request):
-        storage.put(SAMPLES, f"{ME}/newer.wav")
+        storage.put(SAMPLES, f"{ME}/newer.wav", created_at="2026-11-10T11:59:59+00:00")
         return rows(voice_row())
 
     db.on("PATCH", "voices", patch_while_another_upload_lands)
     assert upload(voice_client).status_code == 200
     assert f"{ME}/newer.wav" in storage.objects[SAMPLES]
     assert OLD_SAMPLE not in storage.objects[SAMPLES]
+
+
+def test_upload_keeps_recent_unreferenced_files(voice_client, db, storage):
+    # Another upload stored this file but has not saved its record yet (it may
+    # still succeed, e.g. after a delete), so it must survive this upload's sweep.
+    storage.put(SAMPLES, f"{ME}/pending.wav", created_at="2026-11-10T11:59:00+00:00")
+    storage.put(SAMPLES, f"{ME}/old-leftover.wav", created_at="2026-11-10T11:30:00+00:00")
+    db.on("GET", "voices", rows())
+    db.on("POST", "voices", rows(voice_row(), status=201))
+    assert upload(voice_client).status_code == 200
+    assert set(storage.objects[SAMPLES]) == {storage.uploaded_path(), f"{ME}/pending.wav"}
 
 
 def test_concurrent_replacement_is_409_and_cleans_up(voice_client, db, storage):
@@ -381,13 +392,14 @@ def test_delete_voice_removes_record_and_all_files(voice_client, db, storage):
 
 def test_delete_during_a_replacement_is_409(voice_client, db, storage):
     storage.put(SAMPLES, OLD_SAMPLE)
+    storage.put(SAMPLES, f"{ME}/replacement.wav", created_at="2026-11-10T11:59:59+00:00")
     db.on("GET", "voices", rows(voice_row(sample_storage_path=OLD_SAMPLE)))
-    db.on("DELETE", "voices", rows())  # the sample changed since it was read
+    db.on("DELETE", "voices", rows())  # an upload replaced the sample since it was read
     response = voice_client.delete("/api/v1/users/me/voice")
     assert response.status_code == 409
     assert response.json()["detail"]["code"] == "voice_changed"
-    assert OLD_SAMPLE in storage.objects[SAMPLES]
-
+    # The replaced sample is no longer referenced; the replacement is kept.
+    assert set(storage.objects[SAMPLES]) == {f"{ME}/replacement.wav"}
 
 def test_delete_keeps_files_of_a_voice_uploaded_meanwhile(voice_client, db, storage):
     storage.put(SAMPLES, OLD_SAMPLE)
@@ -410,18 +422,20 @@ def test_delete_without_voice_still_removes_leftover_files(voice_client, db, sto
     assert storage.objects[SAMPLES] == {}
 
 
-def test_failed_file_deletion_is_503_and_retry_finishes(voice_client, db, storage):
-    storage.put(SAMPLES, OLD_SAMPLE)
-    db.on("GET", "voices", rows(voice_row(sample_storage_path=OLD_SAMPLE)))
-    db.on("DELETE", "voices", rows({"id": str(VOICE_ID)}))
+def test_failed_file_deletion_keeps_the_record_so_retry_finishes(voice_client, db, storage):
+    # Recent, so only the record (not the leftover sweep) can lead a retry to it.
+    recent = f"{ME}/recent.wav"
+    storage.put(SAMPLES, recent, created_at="2026-11-10T11:59:30+00:00")
+    db.on("GET", "voices", rows(voice_row(sample_storage_path=recent)))
     storage.fail_remove = httpx.Response(503)
     assert voice_client.delete("/api/v1/users/me/voice").status_code == 503
+    assert db.sent("DELETE", "voices") == []
 
     storage.fail_remove = None
-    db.on("GET", "voices", rows(), rows())
+    db.on("GET", "voices", rows(voice_row(sample_storage_path=recent)), rows())
+    db.on("DELETE", "voices", rows({"id": str(VOICE_ID)}))
     assert voice_client.delete("/api/v1/users/me/voice").status_code == 204
     assert storage.objects[SAMPLES] == {}
-
 
 def test_delete_keeps_recent_unreferenced_files(voice_client, db, storage):
     # A concurrent upload may have stored its file but not yet saved its record.
