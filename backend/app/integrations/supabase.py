@@ -13,6 +13,8 @@ from pydantic import SecretStr
 REQUEST_TIMEOUT_SECONDS = 10.0
 # Uploads carry audio files, so allow longer than other requests.
 STORAGE_TIMEOUT_SECONDS = 30.0
+# Supabase Storage deletes at most 1,000 objects per request.
+REMOVE_BATCH_SIZE = 1000
 
 # Statuses Supabase Auth uses to reject a token (invalid, expired, revoked session).
 TOKEN_REJECTED_STATUSES = {401, 403}
@@ -335,11 +337,12 @@ class SupabaseStorage:
         """List the objects directly inside `folder`, as {"path", "created_at"}."""
         objects: list[dict[str, Any]] = []
         page_size = 100
+        offset = 0
         while True:
             page = await self._request(
                 "POST",
                 f"/object/list/{bucket}",
-                json={"prefix": folder, "limit": page_size, "offset": len(objects)},
+                json={"prefix": folder, "limit": page_size, "offset": offset},
             )
             if not isinstance(page, list) or not all(isinstance(item, dict) for item in page):
                 raise SupabaseUnavailableError("Supabase Storage returned an unexpected list.")
@@ -351,11 +354,13 @@ class SupabaseStorage:
             )
             if len(page) < page_size:
                 return objects
+            offset += len(page)
 
     async def remove(self, bucket: str, paths: list[str]) -> None:
-        """Delete objects. Paths that do not exist are ignored."""
-        if paths:
-            await self._request("DELETE", f"/object/{bucket}", json={"prefixes": paths})
+        """Delete objects. Paths that do not exist are ignored, so retrying is safe."""
+        for start in range(0, len(paths), REMOVE_BATCH_SIZE):
+            batch = paths[start : start + REMOVE_BATCH_SIZE]
+            await self._request("DELETE", f"/object/{bucket}", json={"prefixes": batch})
 
     async def _request(
         self, method: str, path: str, *, headers: dict[str, str] | None = None, **kwargs: Any

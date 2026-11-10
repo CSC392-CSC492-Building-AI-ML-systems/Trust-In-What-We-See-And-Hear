@@ -37,7 +37,9 @@ def inspect_audio(data: bytes) -> AudioInfo | None:
             rate = audio.getframerate()
             frames = audio.getnframes()
             payload = audio.readframes(frames)
-    except (wave.Error, EOFError, ValueError):
+    except Exception:
+        # The parser raises several exception types on malformed chunks
+        # (wave.Error, EOFError, RuntimeError, ...); all mean invalid audio.
         return None
     if not (
         1 <= channels <= 2

@@ -1,5 +1,6 @@
 import io
 import json
+import struct
 import wave
 from datetime import UTC, datetime
 from uuid import UUID
@@ -59,11 +60,13 @@ class FakeStorage:
         self.fail_upload: httpx.Response | None = None
         self.fail_remove: httpx.Response | None = None
         self.fail_list: httpx.Response | None = None
+        self.folders = 1  # nested folders listed alongside the files (ignored)
         self._clock = 0
 
-    def put(self, bucket, path):
+    def put(self, bucket, path, created_at=None):
+        """Store an object; by default at 11:00:NN, an hour before the fixed clock."""
         self._clock += 1
-        self.objects[bucket][path] = f"2026-11-10T11:00:{self._clock:02d}+00:00"
+        self.objects[bucket][path] = created_at or f"2026-11-10T11:00:{self._clock:02d}+00:00"
 
     def __call__(self, request):
         self.requests.append(request)
@@ -78,7 +81,10 @@ class FakeStorage:
                 for name, created in self.objects[bucket].items()
                 if name.startswith(f"{folder}/")
             ]
-            listing.append({"id": None, "name": "nested-folder", "created_at": None})
+            listing.extend(
+                {"id": None, "name": f"folder-{n}", "created_at": None}
+                for n in range(self.folders)
+            )
             start = body(request)["offset"]
             return httpx.Response(200, json=listing[start : start + body(request)["limit"]])
         if request.method == "POST":
@@ -90,7 +96,10 @@ class FakeStorage:
         if request.method == "DELETE":
             if self.fail_remove is not None:
                 return self.fail_remove
-            for name in json.loads(request.content)["prefixes"]:
+            prefixes = json.loads(request.content)["prefixes"]
+            if len(prefixes) > 1000:  # Supabase's limit per request
+                return httpx.Response(400, json={"message": "Too many objects"})
+            for name in prefixes:
                 self.objects[path].pop(name, None)
             return httpx.Response(200, json=[])
         raise AssertionError(f"Unexpected Storage request: {request.method} {request.url}")
@@ -151,6 +160,8 @@ def test_inspect_audio_reads_wav_length():
         b"",
         b"RIFF" + b"\0" * 100,
         b"ID3" + b"\0" * 1000,  # MP3 is not accepted
+        # A chunk claiming more data than its parent holds (raises RuntimeError).
+        b"RIFF" + struct.pack("<I", 12) + b"WAVEJUNK" + struct.pack("<I", 100),
     ],
 )
 def test_inspect_audio_rejects_incomplete_or_other_files(data):
@@ -401,12 +412,35 @@ def test_delete_without_voice_still_removes_leftover_files(voice_client, db, sto
 
 def test_failed_file_deletion_is_503_and_retry_finishes(voice_client, db, storage):
     storage.put(SAMPLES, OLD_SAMPLE)
-    db.on("GET", "voices", rows(voice_row(sample_storage_path=OLD_SAMPLE)), rows())
+    db.on("GET", "voices", rows(voice_row(sample_storage_path=OLD_SAMPLE)))
     db.on("DELETE", "voices", rows({"id": str(VOICE_ID)}))
     storage.fail_remove = httpx.Response(503)
     assert voice_client.delete("/api/v1/users/me/voice").status_code == 503
 
     storage.fail_remove = None
+    db.on("GET", "voices", rows(), rows())
+    assert voice_client.delete("/api/v1/users/me/voice").status_code == 204
+    assert storage.objects[SAMPLES] == {}
+
+
+def test_delete_keeps_recent_unreferenced_files(voice_client, db, storage):
+    # A concurrent upload may have stored its file but not yet saved its record.
+    storage.put(SAMPLES, OLD_SAMPLE, created_at="2026-11-10T11:58:00+00:00")
+    storage.put(SAMPLES, f"{ME}/in-flight.wav", created_at="2026-11-10T11:59:00+00:00")
+    storage.put(SAMPLES, f"{ME}/old-leftover.wav", created_at="2026-11-10T11:30:00+00:00")
+    db.on("GET", "voices", rows(voice_row(sample_storage_path=OLD_SAMPLE)), rows())
+    db.on("DELETE", "voices", rows({"id": str(VOICE_ID)}))
+
+    assert voice_client.delete("/api/v1/users/me/voice").status_code == 204
+
+    # The deleted voice's own file goes at once, even though it is recent.
+    assert set(storage.objects[SAMPLES]) == {f"{ME}/in-flight.wav"}
+
+
+def test_cleanup_removes_more_than_one_batch(voice_client, db, storage):
+    for n in range(1205):
+        storage.put(SAMPLES, f"{ME}/leftover-{n}.wav", created_at="2026-11-10T10:00:00+00:00")
+    storage.folders = 150  # more entries than a page, none of them files
     db.on("GET", "voices", rows(), rows())
     assert voice_client.delete("/api/v1/users/me/voice").status_code == 204
     assert storage.objects[SAMPLES] == {}
