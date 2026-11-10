@@ -160,6 +160,7 @@ def test_inspect_audio_reads_wav_length():
         b"",
         b"RIFF" + b"\0" * 100,
         b"ID3" + b"\0" * 1000,  # MP3 is not accepted
+        wav(10, rate=4000),  # below the supported sample rates
         # A chunk claiming more data than its parent holds (raises RuntimeError).
         b"RIFF" + struct.pack("<I", 12) + b"WAVEJUNK" + struct.pack("<I", 100),
     ],
@@ -232,18 +233,17 @@ def test_replacing_a_sample_deletes_older_files(voice_client, db, storage):
     assert storage.objects[MODELS] == {}
 
 
-def test_replacing_keeps_files_of_a_newer_concurrent_upload(voice_client, db, storage):
-    storage.put(SAMPLES, OLD_SAMPLE)
-    db.on("GET", "voices", rows(voice_row(sample_storage_path=OLD_SAMPLE)))
-
-    def patch_while_another_upload_lands(request):
-        storage.put(SAMPLES, f"{ME}/newer.wav", created_at="2026-11-10T11:59:59+00:00")
-        return rows(voice_row())
-
-    db.on("PATCH", "voices", patch_while_another_upload_lands)
+def test_replacing_deletes_the_replaced_files_even_if_recent(voice_client, db, storage):
+    # Not left to the age-based sweep: the record says these files are replaced.
+    recent = f"{ME}/recent.wav"
+    storage.put(SAMPLES, recent, created_at="2026-11-10T11:59:30+00:00")
+    storage.put(MODELS, f"{ME}/recent.pt", created_at="2026-11-10T11:59:40+00:00")
+    existing = voice_row(sample_storage_path=recent, model_storage_path=f"{ME}/recent.pt")
+    db.on("GET", "voices", rows(existing))
+    db.on("PATCH", "voices", rows(voice_row()))
     assert upload(voice_client).status_code == 200
-    assert f"{ME}/newer.wav" in storage.objects[SAMPLES]
-    assert OLD_SAMPLE not in storage.objects[SAMPLES]
+    assert set(storage.objects[SAMPLES]) == {storage.uploaded_path()}
+    assert storage.objects[MODELS] == {}
 
 
 def test_upload_keeps_recent_unreferenced_files(voice_client, db, storage):
@@ -274,6 +274,7 @@ def test_concurrent_first_upload_is_409(voice_client, db, storage):
     db.on("GET", "voices", rows())
     db.on("POST", "voices", postgres_error("23505", "voices_user_id_key"))
     response = upload(voice_client)
+    assert response.status_code == 409
     assert response.json()["detail"]["code"] == "voice_changed"
     assert storage.objects[SAMPLES] == {}
 
@@ -401,6 +402,7 @@ def test_delete_during_a_replacement_is_409(voice_client, db, storage):
     # The replaced sample is no longer referenced; the replacement is kept.
     assert set(storage.objects[SAMPLES]) == {f"{ME}/replacement.wav"}
 
+
 def test_delete_keeps_files_of_a_voice_uploaded_meanwhile(voice_client, db, storage):
     storage.put(SAMPLES, OLD_SAMPLE)
     storage.put(SAMPLES, f"{ME}/newer.wav")
@@ -436,6 +438,7 @@ def test_failed_file_deletion_keeps_the_record_so_retry_finishes(voice_client, d
     db.on("DELETE", "voices", rows({"id": str(VOICE_ID)}))
     assert voice_client.delete("/api/v1/users/me/voice").status_code == 204
     assert storage.objects[SAMPLES] == {}
+
 
 def test_delete_keeps_recent_unreferenced_files(voice_client, db, storage):
     # A concurrent upload may have stored its file but not yet saved its record.
