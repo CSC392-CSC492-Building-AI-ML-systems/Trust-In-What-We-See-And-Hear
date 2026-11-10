@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime
 from typing import Annotated, Any, NoReturn
 from uuid import UUID, uuid4
 
@@ -14,6 +15,7 @@ from app.integrations.supabase import (
     SupabaseDatabase,
     SupabaseForeignKeyError,
     SupabaseStorage,
+    SupabaseUnavailableError,
     get_supabase_db,
     get_supabase_storage,
 )
@@ -141,17 +143,18 @@ async def upload_voice_sample(
             saved = await _insert_voice(supabase_db, user.user_id, values)
         else:
             saved = await _replace_voice(supabase_db, user.user_id, existing, values)
+    except SupabaseUnavailableError:
+        # The write may have been saved even though no answer came back, so the
+        # new file is kept; the next upload or delete sweeps it if unused.
+        raise
     except BaseException:
         await _remove_quietly(storage, settings.voice_samples_bucket, sample_path)
         raise
 
-    if existing is not None:
-        await _remove_quietly(
-            storage, settings.voice_samples_bucket, existing["sample_storage_path"]
-        )
-        await _remove_quietly(
-            storage, settings.voice_models_bucket, existing["model_storage_path"]
-        )
+    try:
+        await _sweep_older_files(storage, settings, user.user_id, sample_path)
+    except Exception:
+        logger.exception("Could not delete replaced voice files; the next change retries.")
     await voice_pipeline.on_sample_uploaded(UUID(saved["id"]), user.user_id, sample_path)
     return _to_voice(saved)
 
@@ -165,28 +168,49 @@ async def get_voice(user: CurrentUser, supabase_db: SupabaseDb) -> VoiceResponse
     return _to_voice(voice)
 
 
-@router.delete("", status_code=status.HTTP_204_NO_CONTENT, responses=NOT_FOUND)
+@router.delete(
+    "",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses=error_responses(
+        status.HTTP_409_CONFLICT,
+        ("voice_changed", "An upload changed the voice at the same time; retry."),
+    ),
+)
 async def delete_voice(
     request: Request, user: CurrentUser, supabase_db: SupabaseDb, storage: Storage
 ) -> None:
-    """Delete the current user's voice: the stored files and the record.
+    """Delete the current user's voice: the record and every stored file.
 
-    The files are deleted first, so a failure never leaves a file behind
-    without a record pointing to it; retrying finishes the deletion.
+    Safe to repeat: it succeeds when there is no voice, and also deletes any
+    file a failed earlier request left behind. If deleting files fails, it
+    returns `503`; retrying finishes the deletion.
     """
     settings: Settings = request.app.state.settings
     voice = await _find_voice(supabase_db, user.user_id)
-    if voice is None:
-        _voice_not_found()
-    for bucket, path in (
-        (settings.voice_samples_bucket, voice["sample_storage_path"]),
-        (settings.voice_models_bucket, voice["model_storage_path"]),
-    ):
-        if path:
-            await storage.remove(bucket, [path])
-    await supabase_db.delete(
-        "voices", {"id": f"eq.{voice['id']}", "user_id": f"eq.{user.user_id}"}, "id"
-    )
+    if voice is not None:
+        path = voice["sample_storage_path"]
+        deleted = await supabase_db.delete(
+            "voices",
+            {
+                "id": f"eq.{voice['id']}",
+                "user_id": f"eq.{user.user_id}",
+                # Only the sample this request read, so a concurrent upload is
+                # never left without its record.
+                "sample_storage_path": "is.null" if path is None else f"eq.{path}",
+            },
+            "id",
+        )
+        if not deleted:
+            _voice_changed()
+    # Keep files a newer voice (uploaded after the read above) points to.
+    current = await _find_voice(supabase_db, user.user_id)
+    keep = set() if current is None else {
+        current["sample_storage_path"], current["model_storage_path"]
+    }
+    for bucket in (settings.voice_samples_bucket, settings.voice_models_bucket):
+        objects = await storage.list_folder(bucket, str(user.user_id))
+        stale = [item["path"] for item in objects if item["path"] not in keep]
+        await storage.remove(bucket, stale)
 
 
 async def _find_voice(supabase_db: SupabaseDatabase, user_id: UUID) -> dict[str, Any] | None:
@@ -233,13 +257,42 @@ async def _replace_voice(
     return rows[0]
 
 
-async def _remove_quietly(storage: SupabaseStorage, bucket: str, path: str | None) -> None:
-    if not path:
-        return
+async def _remove_quietly(storage: SupabaseStorage, bucket: str, path: str) -> None:
     try:
         await storage.remove(bucket, [path])
     except Exception:
         logger.exception("Could not delete %s from Storage bucket %s.", path, bucket)
+
+
+async def _sweep_older_files(
+    storage: SupabaseStorage, settings: Settings, user_id: UUID, current_sample: str
+) -> None:
+    """Delete the user's files stored before `current_sample`.
+
+    This removes the replaced sample and anything derived from it, and any file
+    an earlier failed request left behind. Files stored after the current
+    sample belong to a concurrent upload, which deletes its own if it fails.
+    """
+    samples = await storage.list_folder(settings.voice_samples_bucket, str(user_id))
+    current = next((item for item in samples if item["path"] == current_sample), None)
+    if current is None or current["created_at"] is None:
+        return
+    cutoff = datetime.fromisoformat(current["created_at"])
+    for bucket, objects in (
+        (settings.voice_samples_bucket, samples),
+        (
+            settings.voice_models_bucket,
+            await storage.list_folder(settings.voice_models_bucket, str(user_id)),
+        ),
+    ):
+        older = [
+            item["path"]
+            for item in objects
+            if item["path"] != current_sample
+            and item["created_at"] is not None
+            and datetime.fromisoformat(item["created_at"]) < cutoff
+        ]
+        await storage.remove(bucket, older)
 
 
 def _to_voice(row: dict[str, Any]) -> VoiceResponse:

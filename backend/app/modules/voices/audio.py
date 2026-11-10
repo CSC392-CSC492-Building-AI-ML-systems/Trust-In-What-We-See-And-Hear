@@ -1,34 +1,24 @@
-"""Identify an uploaded audio file from its contents and measure its length.
+"""Check an uploaded voice sample from its contents and measure its length.
 
-The client's file name and content type are ignored: only the bytes decide
-the format.
+Only PCM WAV is accepted for now, read with the standard library: it carries
+no compressed metadata, so parsing it never uses more memory than the upload
+itself, and the declared length can be checked against the audio actually
+present. The client's file name and content type are ignored.
+
+TBD with the frontend and the voice pipeline: whether to accept other formats.
+Browsers can record WAV (for example with an AudioWorklet); MediaRecorder's
+default WebM/Opus would need converting.
 """
 
 import io
-import math
+import wave
 from dataclasses import dataclass
 
-import mutagen
-from mutagen.flac import FLAC
-from mutagen.mp3 import MP3
-from mutagen.mp4 import MP4
-from mutagen.oggopus import OggOpus
-from mutagen.oggvorbis import OggVorbis
-from mutagen.wave import WAVE
-
-# Format -> (file extension, content type). WebM, which Chrome's MediaRecorder
-# produces, is not supported yet: mutagen cannot read its length. TBD with the
-# frontend and the voice pipeline whether the browser records one of these
-# formats or the backend converts WebM.
-FORMATS: dict[type, tuple[str, str]] = {
-    MP3: ("mp3", "audio/mpeg"),
-    WAVE: ("wav", "audio/wav"),
-    OggOpus: ("ogg", "audio/ogg"),
-    OggVorbis: ("ogg", "audio/ogg"),
-    FLAC: ("flac", "audio/flac"),
-    MP4: ("m4a", "audio/mp4"),
-}
-SUPPORTED_FORMATS = "MP3, WAV, Ogg (Opus or Vorbis), FLAC or M4A"
+EXTENSION = "wav"
+CONTENT_TYPE = "audio/wav"
+SUPPORTED_FORMATS = "PCM WAV"
+MIN_SAMPLE_RATE = 8_000
+MAX_SAMPLE_RATE = 48_000
 
 
 @dataclass(frozen=True)
@@ -39,16 +29,24 @@ class AudioInfo:
 
 
 def inspect_audio(data: bytes) -> AudioInfo | None:
-    """Return the file's format and length, or None if it is not supported audio."""
+    """Return the file's format and length, or None if it is not complete PCM WAV audio."""
     try:
-        audio = mutagen.File(io.BytesIO(data), options=list(FORMATS))
-    except Exception:
-        # Parsers can fail in many ways on malformed or hostile input.
+        with wave.open(io.BytesIO(data), "rb") as audio:
+            channels = audio.getnchannels()
+            sample_width = audio.getsampwidth()
+            rate = audio.getframerate()
+            frames = audio.getnframes()
+            payload = audio.readframes(frames)
+    except (wave.Error, EOFError, ValueError):
         return None
-    if audio is None or type(audio) not in FORMATS:
+    if not (
+        1 <= channels <= 2
+        and 1 <= sample_width <= 4
+        and MIN_SAMPLE_RATE <= rate <= MAX_SAMPLE_RATE
+        and frames > 0
+    ):
         return None
-    duration = getattr(audio.info, "length", None)
-    if not isinstance(duration, int | float) or not math.isfinite(duration) or duration <= 0:
+    # The header's frame count must match the audio that is actually there.
+    if len(payload) != frames * channels * sample_width:
         return None
-    extension, content_type = FORMATS[type(audio)]
-    return AudioInfo(extension, content_type, float(duration))
+    return AudioInfo(EXTENSION, CONTENT_TYPE, frames / rate)

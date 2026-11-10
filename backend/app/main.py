@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from app.api.health import router as health_router
 from app.api.openapi import API_DESCRIPTION, OPENAPI_TAGS
 from app.api.router import router as api_router
+from app.core.body_limit import BodySizeLimitMiddleware
 from app.core.config import Settings, get_settings
 from app.core.errors import request_validation_error_handler
 from app.integrations.supabase import SupabaseUnavailableError
@@ -46,6 +47,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             content={"detail": "The database is unavailable."},
         )
 
+    # Room for the largest voice sample plus the multipart form around it.
+    application.add_middleware(
+        BodySizeLimitMiddleware, max_bytes=settings.voice_sample_max_bytes + 64 * 1024
+    )
     application.include_router(health_router)
     application.include_router(api_router)
     return application

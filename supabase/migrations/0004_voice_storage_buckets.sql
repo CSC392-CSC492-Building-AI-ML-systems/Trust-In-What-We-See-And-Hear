@@ -10,7 +10,7 @@ insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_typ
 values
   (
     'voice-samples', 'voice-samples', false, 10485760,
-    array['audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/flac', 'audio/mp4']
+    array['audio/wav']
   ),
   ('voice-models', 'voice-models', false, null, null)
 on conflict (id) do nothing;

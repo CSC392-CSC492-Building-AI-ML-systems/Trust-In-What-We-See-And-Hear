@@ -331,6 +331,27 @@ class SupabaseStorage:
             headers={"Content-Type": content_type, "x-upsert": "false"},
         )
 
+    async def list_folder(self, bucket: str, folder: str) -> list[dict[str, Any]]:
+        """List the objects directly inside `folder`, as {"path", "created_at"}."""
+        objects: list[dict[str, Any]] = []
+        page_size = 100
+        while True:
+            page = await self._request(
+                "POST",
+                f"/object/list/{bucket}",
+                json={"prefix": folder, "limit": page_size, "offset": len(objects)},
+            )
+            if not isinstance(page, list) or not all(isinstance(item, dict) for item in page):
+                raise SupabaseUnavailableError("Supabase Storage returned an unexpected list.")
+            objects.extend(
+                {"path": f"{folder}/{item.get('name')}", "created_at": item.get("created_at")}
+                for item in page
+                # Folders have no id; this app never nests folders.
+                if item.get("id") is not None and isinstance(item.get("name"), str)
+            )
+            if len(page) < page_size:
+                return objects
+
     async def remove(self, bucket: str, paths: list[str]) -> None:
         """Delete objects. Paths that do not exist are ignored."""
         if paths:
@@ -338,7 +359,7 @@ class SupabaseStorage:
 
     async def _request(
         self, method: str, path: str, *, headers: dict[str, str] | None = None, **kwargs: Any
-    ) -> None:
+    ) -> Any:
         try:
             response = await self._client.request(
                 method,
@@ -360,6 +381,10 @@ class SupabaseStorage:
             raise SupabaseStorageError(
                 error.get("message") or f"Supabase Storage returned {response.status_code}."
             )
+        try:
+            return response.json()
+        except ValueError:
+            return None
 
 
 def get_supabase_storage(request: Request) -> SupabaseStorage:
