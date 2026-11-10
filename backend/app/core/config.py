@@ -23,6 +23,16 @@ class Settings(BaseSettings):
     # consent is also single use. Placeholder until the team agrees a period.
     consent_valid_minutes: int = Field(default=24 * 60, gt=0)
 
+    # Private Supabase Storage buckets for voice reference samples and any files
+    # the voice pipeline derives from them. Only the backend can read them.
+    voice_samples_bucket: str = "voice-samples"
+    voice_models_bucket: str = "voice-models"
+    # Limits for a voice reference sample. Placeholders until the voice
+    # pipeline confirms what Chatterbox needs.
+    voice_sample_max_bytes: int = Field(default=10 * 1024 * 1024, gt=0)
+    voice_sample_min_seconds: float = Field(default=5.0, gt=0)
+    voice_sample_max_seconds: float = Field(default=60.0, gt=0)
+
 
 @lru_cache
 def get_settings() -> Settings:

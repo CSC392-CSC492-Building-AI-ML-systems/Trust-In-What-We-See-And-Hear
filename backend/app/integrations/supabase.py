@@ -1,4 +1,4 @@
-"""Supabase integration: Auth token verification and database access (storage to come).
+"""Supabase integration: Auth token verification, database access and Storage.
    Code Generated with the help of ClaudeCode.
 """
 
@@ -11,6 +11,8 @@ from fastapi import HTTPException, Request, status
 from pydantic import SecretStr
 
 REQUEST_TIMEOUT_SECONDS = 10.0
+# Uploads carry audio files, so allow longer than other requests.
+STORAGE_TIMEOUT_SECONDS = 30.0
 
 # Statuses Supabase Auth uses to reject a token (invalid, expired, revoked session).
 TOKEN_REJECTED_STATUSES = {401, 403}
@@ -302,3 +304,70 @@ def get_supabase_db(request: Request) -> SupabaseDatabase:
             detail="The database is not configured.",
         )
     return SupabaseDatabase(settings.supabase_url, secret_key, request.app.state.http_client)
+
+
+class SupabaseStorageError(Exception):
+    """Supabase Storage rejected a request for a reason that indicates a bug or missing setup."""
+
+
+class SupabaseStorage:
+    """Minimal client for the Supabase Storage REST API.
+
+    Uses the secret key, which bypasses Storage access policies, so callers must
+    build every object path from the authenticated user's ID themselves.
+    """
+
+    def __init__(self, url: str, secret_key: str, client: httpx.AsyncClient):
+        self._base_url = f"{url.rstrip('/')}/storage/v1"
+        self._secret_key = secret_key
+        self._client = client
+
+    async def upload(self, bucket: str, path: str, data: bytes, content_type: str) -> None:
+        """Store a new object. Fails rather than overwriting an existing one."""
+        await self._request(
+            "POST",
+            f"/object/{bucket}/{path}",
+            content=data,
+            headers={"Content-Type": content_type, "x-upsert": "false"},
+        )
+
+    async def remove(self, bucket: str, paths: list[str]) -> None:
+        """Delete objects. Paths that do not exist are ignored."""
+        if paths:
+            await self._request("DELETE", f"/object/{bucket}", json={"prefixes": paths})
+
+    async def _request(
+        self, method: str, path: str, *, headers: dict[str, str] | None = None, **kwargs: Any
+    ) -> None:
+        try:
+            response = await self._client.request(
+                method,
+                f"{self._base_url}{path}",
+                headers={
+                    "apikey": self._secret_key,
+                    "Authorization": f"Bearer {self._secret_key}",
+                    **(headers or {}),
+                },
+                timeout=STORAGE_TIMEOUT_SECONDS,
+                **kwargs,
+            )
+        except httpx.HTTPError as exc:
+            raise SupabaseUnavailableError(str(exc)) from exc
+        if response.status_code == 429 or response.status_code >= 500:
+            raise SupabaseUnavailableError(f"Supabase Storage returned {response.status_code}.")
+        if response.is_error:
+            error = _json_object_or_empty(response)
+            raise SupabaseStorageError(
+                error.get("message") or f"Supabase Storage returned {response.status_code}."
+            )
+
+
+def get_supabase_storage(request: Request) -> SupabaseStorage:
+    settings = request.app.state.settings
+    secret_key = _secret(settings.supabase_secret_key)
+    if not settings.supabase_url or not secret_key:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Storage is not configured.",
+        )
+    return SupabaseStorage(settings.supabase_url, secret_key, request.app.state.http_client)

@@ -11,7 +11,7 @@ up and in (email and password; no other providers for now) directly with Supabas
 the resulting access token (a JWT) to the backend, which verifies it. The backend has no login or
 registration endpoints and there is no session table in our schema. See
 [docs/authentication.md](../docs/authentication.md).
-Binary files (voice samples, Chatterbox `.pt` files, call recordings) live in **Supabase Storage**,
+Binary files (voice samples, any files the voice pipeline derives from them, call recordings) live in **Supabase Storage**,
 and the tables only store the storage path.
 
 ---
@@ -23,7 +23,7 @@ and the tables only store the storage path.
 | `auth.users` | Managed by Supabase Auth (email, password hash) | None (Supabase Auth on the client) |
 | `users` | App-level profile for each user (name, ID verification, onboarding answers) | `finishOnboarding`, `VerifyUser`, `getUserInfo`, `editUserInfo` |
 | `friendships` | Friend requests and accepted friendships between two users | `sendFriendRequest`, `acceptFriendRequest`, `declineFriendRequest`, `getFriendsList`, `removeFriend` |
-| `voices` | Each user's own cloned voice (Chatterbox `.pt` file) | `trainVoice` |
+| `voices` | Each user's own voice reference sample for Chatterbox | `uploadVoiceSample`, `getVoice`, `deleteVoice` |
 | `scam_consents` | Time-limited permission from a friend to use their profile and voice | `RequestConsent`, `AcceptConsent`, `DeclineConsent`, `getConsents` |
 | `scam_scenarios` | Built-in and user-created scam scripts the AI pipeline uses | `addScenario`, `removeScenario`, `UpdateScenario` |
 | `calls` | One row per simulated scam call | `GetCallHistory`, `GetCallDetails` |
@@ -169,21 +169,22 @@ create index friendships_requester_id_idx on public.friendships(requester_id);
 create index friendships_addressee_id_idx on public.friendships(addressee_id);
 ```
 
-### `voices` (trainVoice)
+### `voices` (uploadVoiceSample)
 
-One voice per user. Training again replaces the existing row's files.
-
-`trainVoice` takes an mp3, generates a Chatterbox `.pt` file, and stores it linked to the requesting
-user. It only ever trains the requesting user's own voice. Friends get access through
-`scam_consents`, and never receive the file itself.
+One voice per user. Chatterbox is pretrained and clones a voice from a reference recording, so there
+is no per-user training: the user uploads a reference sample of their own voice
+(`PUT /api/v1/users/me/voice`), and uploading again replaces it, deletes the old files and resets
+`status` to `uploaded`. What the voice pipeline derives from the sample, if anything
+(`model_storage_path`), and when it sets `ready`, is TBD. Only the owner's own voice is ever
+uploaded. Friends get access through `scam_consents`, and never receive any file.
 
 ```sql
 create table public.voices (
   id                    uuid primary key default gen_random_uuid(),
   user_id               uuid unique not null references public.users(id) on delete cascade,
-  sample_storage_path   text,                      -- Supabase Storage: voice-samples/{user_id}/{voice_id}.mp3
+  sample_storage_path   text,                      -- Supabase Storage: voice-samples/{user_id}/{upload_id}.{ext}
   sample_duration_seconds numeric(6,2),
-  model_storage_path    text,                      -- Supabase Storage: voice-models/{user_id}/{voice_id}.pt, set once training completes
+  model_storage_path    text,                      -- Supabase Storage: voice-models/..., if the pipeline derives a file (TBD)
   status                voice_status not null default 'uploaded',
   error_message         text,
   -- User confirms the sample is their own voice and agrees to it being cloned
@@ -386,8 +387,13 @@ through the backend.
 
 | Bucket | Path | Access |
 |---|---|---|
-| `voice-samples` (private) | `{user_id}/{voice_id}.mp3` | owner only |
-| `voice-models` (private) | `{user_id}/{voice_id}.pt` | backend only; never sent to a client |
+| `voice-samples` (private) | `{user_id}/{upload_id}.{ext}` (mp3, wav, ogg, flac or m4a) | backend only; never sent to a client |
+| `voice-models` (private) | `{user_id}/...` | backend only; never sent to a client |
+
+Draft migration `0004_voice_storage_buckets.sql` creates the two voice buckets. They have no
+`storage.objects` policies, so clients cannot read or write them; the backend uses the secret key.
+Each upload gets a new `upload_id`, so a failed upload never overwrites the sample the database
+points to.
 | `call-recordings` (private) | `{user_id}/{call_id}.mp3` | owner only; deleted after retention period |
 
 ---
@@ -404,8 +410,10 @@ through the backend.
   snapshot.
 - **Call recordings**: deleted after 30 days (scheduled job). Results are kept until the user deletes
   them.
-- **Voice samples**: deleted from Storage once training is `ready`, which sets
-  `sample_storage_path` to null. The `.pt` file is kept until the user retrains or is deleted.
+- **Voice samples**: kept until the user replaces or deletes their voice
+  (`DELETE /api/v1/users/me/voice`, which deletes the files first, then the row). **TBD:** whether
+  the sample can be deleted once the pipeline is `ready`; with zero-shot cloning the pipeline may
+  need it for every call.
 
 ---
 
@@ -431,7 +439,9 @@ the frontend calls Supabase Auth directly, which writes `auth.users`.
 | `GET getConsents` | `scam_consents`, `users` (safe fields) | – |
 | `GET GetCallHistory` | `calls`, `call_results` (score/outcome) | – |
 | `GET GetCallDetails` | `calls`, `call_results` | – |
-| `POST trainVoice` | `voices` | Storage, `voices` |
+| `PUT uploadVoiceSample` | `voices` | Storage, `voices` |
+| `GET getVoice` | `voices` | – |
+| `DEL deleteVoice` | `voices` | Storage, `voices` (deletes row) |
 | `POST addScenario` | – | `scam_scenarios` |
 | `PUT UpdateScenario` | `scam_scenarios` | `scam_scenarios` (creator only) |
 | `DEL removeScenario` | `scam_scenarios` | `scam_scenarios` (creator only) |

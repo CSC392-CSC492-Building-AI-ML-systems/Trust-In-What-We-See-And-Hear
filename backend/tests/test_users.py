@@ -26,6 +26,7 @@ PROFILE = {
     "verified": False,
     "onboarding_answers": {"age_range": "25-34"},
     "created_at": "2026-11-07T12:00:00Z",
+    "voice_status": None,
 }
 ONBOARDING = {
     "username": "alex_morgan",
@@ -94,6 +95,15 @@ def test_get_profile_marks_verified_users(users_client, supabase_db):
     row = {**PROFILE_ROW, "verified_at": "2026-11-08T09:00:00+00:00"}
     supabase_db.handler = lambda request: httpx.Response(200, json=[row])
     assert users_client.get("/api/v1/users/me").json()["verified"] is True
+
+
+@pytest.mark.parametrize("voice", [{"status": "ready"}, [{"status": "ready"}]])
+def test_get_profile_includes_voice_status(users_client, supabase_db, voice):
+    row = {**PROFILE_ROW, "voice": voice}
+    supabase_db.handler = lambda request: httpx.Response(200, json=[row])
+    response = users_client.get("/api/v1/users/me")
+    assert response.json()["voice_status"] == "ready"
+    assert "voice:voices(status)" in supabase_db.requests[0].url.params["select"]
 
 
 def test_get_profile_before_onboarding_is_404(users_client, supabase_db):
