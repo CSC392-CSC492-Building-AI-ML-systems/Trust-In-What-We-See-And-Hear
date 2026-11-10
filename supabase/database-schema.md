@@ -55,7 +55,7 @@ spotting a scam that uses a clone of their friend Sam's voice:
 1. Alex sends a `RequestConsent` request for Sam, which creates a `pending` row in `scam_consents`.
 2. Sam accepts through `AcceptConsent`. The row becomes `accepted`, and `expires_at` is set to a
    short time from now. Or Sam declines through `DeclineConsent`, and the row becomes `declined`.
-3. `getConsents` returns Alex's accepted consents that have not expired.
+3. `getConsents` returns Alex's accepted consents that have not been used or expired.
 4. Alex chooses which consenting friend to use (here, Sam) and a scenario. The AI then holds the
    simulated call with Alex, using Sam's voice and profile. Simulated calls do not go through the
    phone network.
@@ -63,8 +63,9 @@ spotting a scam that uses a clone of their friend Sam's voice:
 On a simulated call, `user_id` is Alex (who receives the call) and `persona_user_id` is Sam (who is
 being impersonated).
 
-Before starting a simulated call, the backend must check that the consent is `accepted` and not
-expired, that the two users are still friends, and that Sam's voice is `ready`.
+Before starting a simulated call, the backend must check that the consent is `accepted`, unused
+and not expired, that the two users are still friends, and that Sam's voice is `ready`, then mark
+the consent used. `use_consent` in `backend/app/modules/consents/service.py` does all of this.
 
 ---
 
@@ -194,9 +195,12 @@ create table public.voices (
 
 ### `scam_consents` (RequestConsent, AcceptConsent, DeclineConsent, getConsents)
 
-`expires_at` is set when the consent is accepted. Expiry is worked out by comparing `expires_at` to
-the current time, so no scheduled job is needed. An available consent is one where
-`status = 'accepted' and expires_at > now()`.
+Each consent covers **one call**. `expires_at` is set when the consent is accepted, and `used_at`
+(added in draft migration `0003_single_use_consents.sql`) when a call starts with it. The expiry
+stops a requester holding an unused consent until the consenter has forgotten giving it. Expiry is
+worked out by comparing `expires_at` to the current time, so no scheduled job is needed. An
+available consent is one where `status = 'accepted' and used_at is null and expires_at > now()`.
+The consenter can revoke an accepted, unused consent, which sets `expires_at` to now.
 
 ```sql
 create table public.scam_consents (
@@ -207,8 +211,10 @@ create table public.scam_consents (
   requested_at  timestamptz not null default now(),
   responded_at  timestamptz,
   expires_at    timestamptz,
+  used_at       timestamptz,                     -- set when a call starts with it (migration 0002)
   check (requester_id <> consenter_id),
-  check (status <> 'accepted' or expires_at is not null)
+  check (status <> 'accepted' or expires_at is not null),
+  check (used_at is null or status = 'accepted')
 );
 
 -- Only one unanswered request at a time for each requester and friend
@@ -216,6 +222,8 @@ create unique index scam_consents_one_pending_idx on public.scam_consents(reques
   where status = 'pending';
 create index scam_consents_requester_id_idx on public.scam_consents(requester_id, status);
 create index scam_consents_consenter_id_idx on public.scam_consents(consenter_id, status);
+create index scam_consents_usable_idx on public.scam_consents(requester_id, expires_at)
+  where status = 'accepted' and used_at is null;
 ```
 
 ### `scam_scenarios` (addScenario, removeScenario, UpdateScenario)

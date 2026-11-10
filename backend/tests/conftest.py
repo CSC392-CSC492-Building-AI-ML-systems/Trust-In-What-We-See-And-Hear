@@ -11,6 +11,9 @@ from app.core.auth import AuthenticatedUser, get_current_user
 from app.core.config import Settings
 from app.main import create_app
 
+# Shared fixtures for endpoints that make several database queries (db, db_client).
+pytest_plugins = ["supabase_mock"]
+
 
 # A route that only runs authentication, so the auth tests don't depend on real routes.
 PROTECTED_URL = "/_test/protected"

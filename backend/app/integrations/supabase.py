@@ -41,6 +41,14 @@ class SupabaseConflictError(Exception):
         self.constraint = constraint
 
 
+class SupabaseForeignKeyError(Exception):
+    """A database write referenced a row that does not exist (Postgres error 23503)."""
+
+    def __init__(self, constraint: str | None, message: str):
+        super().__init__(message)
+        self.constraint = constraint
+
+
 class SupabaseDatabaseError(Exception):
     """The database rejected a request for a reason that indicates a bug."""
 
@@ -154,10 +162,27 @@ class SupabaseDatabase:
         self._client = client
 
     async def select(
-        self, table: str, filters: dict[str, str], columns: str
+        self,
+        table: str,
+        filters: dict[str, str],
+        columns: str,
+        *,
+        order: str | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
     ) -> list[dict[str, Any]]:
-        """Return the rows matching `filters`, e.g. {"id": "eq.<uuid>"}."""
-        return await self._request("GET", table, params={**filters, "select": columns})
+        """Return the rows matching `filters`, e.g. {"id": "eq.<uuid>"}.
+
+        `order` uses PostgREST syntax, e.g. "created_at.desc".
+        """
+        params: dict[str, str | int] = {**filters, "select": columns}
+        if order is not None:
+            params["order"] = order
+        if limit is not None:
+            params["limit"] = limit
+        if offset is not None:
+            params["offset"] = offset
+        return await self._request("GET", table, params=params)
 
     async def insert(
         self, table: str, row: dict[str, Any], columns: str
@@ -182,6 +207,22 @@ class SupabaseDatabase:
             table,
             params={**filters, "select": columns},
             json=values,
+            headers={"Prefer": "return=representation"},
+        )
+
+    async def delete(
+        self, table: str, filters: dict[str, str], columns: str
+    ) -> list[dict[str, Any]]:
+        """Delete the rows matching `filters` and return them (empty if none matched).
+
+        `filters` must not be empty: PostgREST would delete every row.
+        """
+        if not filters:
+            raise ValueError("Refusing to delete without filters.")
+        return await self._request(
+            "DELETE",
+            table,
+            params={**filters, "select": columns},
             headers={"Prefer": "return=representation"},
         )
 
@@ -215,6 +256,8 @@ class SupabaseDatabase:
             message = error.get("message") or f"Supabase returned {response.status_code}."
             if error.get("code") == "23505":
                 raise SupabaseConflictError(_constraint_name(message), message)
+            if error.get("code") == "23503":
+                raise SupabaseForeignKeyError(_constraint_name(message), message)
             raise SupabaseDatabaseError(message)
         try:
             body = response.json()
