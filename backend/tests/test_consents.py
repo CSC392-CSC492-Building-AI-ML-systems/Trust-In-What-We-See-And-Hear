@@ -38,7 +38,7 @@ def fixed_clock(monkeypatch):
     monkeypatch.setattr(clock, "now", lambda: NOW)
 
 
-def consent(requester=ME, consenter=FRIEND, status="pending", **changes):
+def consent(requester=ME, consenter=FRIEND, status="pending", voice_status="ready", **changes):
     users = {ME: user_row(ME, "alex_morgan"), FRIEND: user_row(FRIEND, "sam_lee", True)}
     return {
         "id": str(CONSENT_ID),
@@ -50,7 +50,7 @@ def consent(requester=ME, consenter=FRIEND, status="pending", **changes):
         "requester_id": str(requester),
         "consenter_id": str(consenter),
         "requester": users[requester],
-        "consenter": users[consenter],
+        "consenter": {**users[consenter], "voice": voice_status and {"status": voice_status}},
         **changes,
     }
 
@@ -79,11 +79,12 @@ def test_request_consent(db_client, db):
     assert body(db.sent("POST", "scam_consents")[0]) == {
         "requester_id": str(ME),
         "consenter_id": str(FRIEND),
+        "friendship_id": "f",  # deleted with the friendship
     }
     assert db.sent("GET", "voices")[0].url.params["user_id"] == f"eq.{FRIEND}"
     available = db.sent("GET", "scam_consents")[0].url.params
     assert available["used_at"] == "is.null"
-    assert available["expires_at"] == f"gt.{NOW_ISO}"
+    assert available["expires_at"] == "gt.now"  # the database's clock
 
 
 def test_request_consent_from_self_is_400(db_client, db):
@@ -123,6 +124,16 @@ def test_request_consent_while_one_is_available_is_409(db_client, db):
     assert response.json()["detail"]["code"] == "consent_available"
 
 
+def test_request_consent_after_concurrent_unfriending_is_409(db_client, db):
+    db.on("GET", "friendships", friends_reply)
+    db.on("GET", "voices", voice())
+    db.on("GET", "scam_consents", rows())
+    db.on("POST", "scam_consents", postgres_error("23503", "scam_consents_friendship_id_fkey"))
+    response = db_client.post("/api/v1/consents", json={"consenter_user_id": str(FRIEND)})
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "not_friends"
+
+
 def test_request_consent_while_one_is_pending_is_409(db_client, db):
     db.on("GET", "friendships", friends_reply)
     db.on("GET", "voices", voice())
@@ -153,7 +164,17 @@ def test_list_usable_consents(db_client, db):
     assert params["requester_id"] == f"eq.{ME}"
     assert params["status"] == "eq.accepted"
     assert params["used_at"] == "is.null"
-    assert params["expires_at"] == f"gt.{NOW_ISO}"
+    assert params["expires_at"] == "gt.now"
+
+
+@pytest.mark.parametrize("voice_status", ["uploaded", "failed", None])
+def test_consent_is_not_usable_while_voice_is_not_ready(db_client, db, voice_status):
+    accepted = consent(
+        status="accepted", voice_status=voice_status, expires_at="2026-11-11T11:30:00+00:00"
+    )
+    db.on("GET", "scam_consents", rows(accepted))
+    [item] = db_client.get("/api/v1/consents").json()["items"]
+    assert item["usable"] is False
 
 
 def test_list_incoming_consent_requests(db_client, db):
@@ -172,8 +193,6 @@ def test_list_incoming_consent_requests(db_client, db):
 
 
 def test_accept_consent_sets_expiry(db_client, db):
-    db.on("GET", "scam_consents", rows({"requester_id": str(FRIEND)}))
-    db.on("GET", "friendships", friends_reply)
     accepted = consent(
         requester=FRIEND,
         consenter=ME,
@@ -187,6 +206,8 @@ def test_accept_consent_sets_expiry(db_client, db):
 
     assert response.status_code == 200
     assert response.json()["status"] == "accepted"
+    # Only the requester can use it, so it is not usable for the consenter.
+    assert response.json()["usable"] is False
     request = db.sent("PATCH", "scam_consents")[0]
     # Only the consenter can accept, and only a pending request.
     assert request.url.params["consenter_id"] == f"eq.{ME}"
@@ -200,8 +221,6 @@ def test_accept_consent_sets_expiry(db_client, db):
 
 def test_accept_consent_uses_configured_period(application, db_client, db):
     application.state.settings.consent_valid_minutes = 30
-    db.on("GET", "scam_consents", rows({"requester_id": str(FRIEND)}))
-    db.on("GET", "friendships", friends_reply)
     db.on(
         "PATCH",
         "scam_consents",
@@ -214,19 +233,11 @@ def test_accept_consent_uses_configured_period(application, db_client, db):
 
 
 def test_accept_someone_elses_consent_is_404(db_client, db):
-    db.on("GET", "scam_consents", rows())
+    db.on("PATCH", "scam_consents", rows())
     response = db_client.post(f"/api/v1/consents/{CONSENT_ID}/accept")
     assert response.status_code == 404
     assert response.json()["detail"]["code"] == "consent_not_found"
-    assert db.sent("GET", "scam_consents")[0].url.params["consenter_id"] == f"eq.{ME}"
-
-
-def test_accept_consent_after_unfriending_is_409(db_client, db):
-    db.on("GET", "scam_consents", rows({"requester_id": str(FRIEND)}))
-    db.on("GET", "friendships", not_friends_reply)
-    response = db_client.post(f"/api/v1/consents/{CONSENT_ID}/accept")
-    assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "not_friends"
+    assert db.sent("PATCH", "scam_consents")[0].url.params["consenter_id"] == f"eq.{ME}"
 
 
 def test_decline_consent(db_client, db):
@@ -245,16 +256,18 @@ def test_decline_unknown_consent_is_404(db_client, db):
     assert db_client.post(f"/api/v1/consents/{CONSENT_ID}/decline").status_code == 404
 
 
-def test_revoke_consent_expires_it_now(db_client, db):
-    revoked = consent(FRIEND, ME, "accepted", expires_at=NOW.isoformat())
+def test_revoke_consent(db_client, db):
+    revoked = consent(FRIEND, ME, "revoked", expires_at="2026-11-11T11:30:00+00:00")
     db.on("PATCH", "scam_consents", rows(revoked))
     response = db_client.post(f"/api/v1/consents/{CONSENT_ID}/revoke")
     assert response.status_code == 200
-    assert response.json()["usable"] is False
+    assert response.json()["status"] == "revoked"
     request = db.sent("PATCH", "scam_consents")[0]
     assert request.url.params["consenter_id"] == f"eq.{ME}"
+    assert request.url.params["status"] == "eq.accepted"
     assert request.url.params["used_at"] == "is.null"
-    assert body(request) == {"expires_at": NOW_ISO}
+    assert request.url.params["expires_at"] == "gt.now"
+    assert body(request) == {"status": "revoked"}
 
 
 def test_revoke_unknown_consent_is_404(db_client, db):
@@ -276,18 +289,19 @@ def run_use_consent(fake: RoutedSupabaseDb):
 
 def test_use_consent_marks_it_used(db):
     db.on("GET", "scam_consents", rows({"id": str(CONSENT_ID), "consenter_id": str(FRIEND)}))
-    db.on("GET", "friendships", friends_reply)
     db.on("GET", "voices", voice())
     used = consent(status="accepted", used_at=NOW.isoformat())
     db.on("PATCH", "scam_consents", rows(used))
 
     assert run_use_consent(db) == used
     request = db.sent("PATCH", "scam_consents")[0]
-    # The update itself re-checks the conditions, so two calls cannot both use it.
+    # The update itself re-checks the conditions on the database's clock, so two
+    # calls cannot both use it and a late request cannot use an expired consent.
     assert request.url.params["requester_id"] == f"eq.{ME}"
+    assert request.url.params["status"] == "eq.accepted"
     assert request.url.params["used_at"] == "is.null"
-    assert request.url.params["expires_at"] == f"gt.{NOW_ISO}"
-    assert body(request) == {"used_at": NOW_ISO}
+    assert request.url.params["expires_at"] == "gt.now"
+    assert body(request) == {"used_at": "now"}
 
 
 @pytest.mark.parametrize(
@@ -297,14 +311,6 @@ def test_use_consent_marks_it_used(db):
         (
             [
                 ("GET", "scam_consents", rows({"id": "c", "consenter_id": str(FRIEND)})),
-                ("GET", "friendships", not_friends_reply),
-            ],
-            "not_friends",
-        ),
-        (
-            [
-                ("GET", "scam_consents", rows({"id": "c", "consenter_id": str(FRIEND)})),
-                ("GET", "friendships", friends_reply),
                 ("GET", "voices", voice("uploaded")),
             ],
             "voice_not_ready",
@@ -312,9 +318,9 @@ def test_use_consent_marks_it_used(db):
         (
             [
                 ("GET", "scam_consents", rows({"id": "c", "consenter_id": str(FRIEND)})),
-                ("GET", "friendships", friends_reply),
                 ("GET", "voices", voice()),
-                ("PATCH", "scam_consents", rows()),  # used by another call meanwhile
+                # Used, revoked, expired or unfriended meanwhile.
+                ("PATCH", "scam_consents", rows()),
             ],
             "consent_unusable",
         ),

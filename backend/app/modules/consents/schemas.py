@@ -33,7 +33,9 @@ class ConsentResponse(BaseModel):
         )
     )
     user: PublicUser = Field(description="The other user.")
-    status: Literal["pending", "accepted", "declined"]
+    status: Literal["pending", "accepted", "declined", "revoked"] = Field(
+        description="`revoked`: the consenter withdrew it after accepting, before it was used."
+    )
     requested_at: datetime
     responded_at: datetime | None
     expires_at: datetime | None = Field(
@@ -43,5 +45,9 @@ class ConsentResponse(BaseModel):
         description="When the consent was used to start a call. Each consent is used once."
     )
     usable: bool = Field(
-        description="Accepted, not used and not expired. Only the requester can use it."
+        description=(
+            "Whether the current user can start a call with it now: they are the "
+            "requester, and it is accepted, unused, unexpired and the friend's voice "
+            "is ready."
+        )
     )

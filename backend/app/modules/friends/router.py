@@ -1,4 +1,3 @@
-import logging
 from typing import Annotated, Any, Literal, NoReturn
 from uuid import UUID
 
@@ -11,7 +10,6 @@ from app.core.errors import api_error, error_responses, merge_responses
 from app.integrations.supabase import (
     SupabaseConflictError,
     SupabaseDatabase,
-    SupabaseUnavailableError,
     get_supabase_db,
 )
 from app.modules.friends.schemas import (
@@ -22,8 +20,6 @@ from app.modules.friends.schemas import (
 )
 from app.modules.friends.service import FRIENDSHIP_COLUMNS, pair_filter
 from app.modules.users.public import PUBLIC_USER_COLUMNS, to_public_user
-
-logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Friends"])
 
@@ -212,8 +208,9 @@ async def remove_friend(
 ) -> None:
     """Remove a friend, for both users.
 
-    Consents between the two users that are pending, or accepted and not yet
-    used, are deleted too.
+    The consents between the two users belong to the friendship, so the
+    database deletes them with it, in the same statement. Becoming friends
+    again never brings them back.
     """
     rows = await supabase_db.delete(
         "friendships",
@@ -225,19 +222,6 @@ async def remove_friend(
     )
     if not rows:
         api_error(status.HTTP_404_NOT_FOUND, "friend_not_found", "That user is not your friend.")
-    try:
-        await supabase_db.delete(
-            "scam_consents",
-            {
-                "or": pair_filter(user.user_id, user_id, "requester_id", "consenter_id"),
-                "status": "in.(pending,accepted)",
-                "used_at": "is.null",
-            },
-            "id",
-        )
-    except SupabaseUnavailableError:
-        # Not fatal: a consent is never usable without the friendship.
-        logger.warning("Could not delete open consents after removing a friend.")
 
 
 def _existing_friendship_conflict(row: dict[str, Any], user_id: UUID) -> NoReturn:

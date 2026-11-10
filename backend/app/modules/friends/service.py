@@ -25,15 +25,13 @@ FRIENDSHIP_COLUMNS = (
 async def find_friendship(
     db: SupabaseDatabase, first: UUID, second: UUID
 ) -> dict[str, Any] | None:
-    """Return the friendship row between two users (pending or accepted), if any."""
+    """Return the friendship row between two users (pending or accepted), if any.
+
+    Columns: id, status, requester_id, addressee_id.
+    """
     rows = await db.select(
         "friendships",
         {"or": pair_filter(first, second, "requester_id", "addressee_id")},
         "id,status,requester_id,addressee_id",
     )
     return rows[0] if rows else None
-
-
-async def are_friends(db: SupabaseDatabase, first: UUID, second: UUID) -> bool:
-    friendship = await find_friendship(db, first, second)
-    return friendship is not None and friendship["status"] == "accepted"

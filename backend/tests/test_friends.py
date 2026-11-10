@@ -221,27 +221,19 @@ def test_list_friends(db_client, db):
     assert db.sent("GET", "friendships")[0].url.params["status"] == "eq.accepted"
 
 
-def test_remove_friend_also_deletes_open_consents(db_client, db):
+def test_remove_friend(db_client, db):
+    # Consents are deleted by the database with the friendship (on delete cascade).
     db.on("DELETE", "friendships", rows({"id": str(REQUEST_ID)}))
-    db.on("DELETE", "scam_consents", rows())
 
     response = db_client.delete(f"/api/v1/friends/{FRIEND}")
 
     assert response.status_code == 204
-    pair = (
+    params = db.sent("DELETE", "friendships")[0].url.params
+    assert params["or"] == (
         f"(and(requester_id.eq.{ME},addressee_id.eq.{FRIEND}),"
         f"and(requester_id.eq.{FRIEND},addressee_id.eq.{ME}))"
     )
-    assert db.sent("DELETE", "friendships")[0].url.params["or"] == pair
-    consents = db.sent("DELETE", "scam_consents")[0].url.params
-    assert consents["status"] == "in.(pending,accepted)"
-    assert consents["used_at"] == "is.null"
-
-
-def test_remove_friend_succeeds_if_consent_cleanup_fails(db_client, db):
-    db.on("DELETE", "friendships", rows({"id": str(REQUEST_ID)}))
-    db.on("DELETE", "scam_consents", httpx.Response(503))
-    assert db_client.delete(f"/api/v1/friends/{FRIEND}").status_code == 204
+    assert params["status"] == "eq.accepted"
 
 
 def test_remove_non_friend_is_404(db_client, db):

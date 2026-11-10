@@ -75,7 +75,7 @@ the consent used. `use_consent` in `backend/app/modules/consents/service.py` doe
 -- No 'declined': declining a request or removing a friend deletes the row.
 create type friendship_status as enum ('pending', 'accepted');
 
-create type consent_status as enum ('pending', 'accepted', 'declined');
+create type consent_status as enum ('pending', 'accepted', 'declined', 'revoked');  -- 'revoked': migration 0002
 
 create type voice_status as enum ('uploaded', 'training', 'ready', 'failed');
 
@@ -200,13 +200,17 @@ Each consent covers **one call**. `expires_at` is set when the consent is accept
 stops a requester holding an unused consent until the consenter has forgotten giving it. Expiry is
 worked out by comparing `expires_at` to the current time, so no scheduled job is needed. An
 available consent is one where `status = 'accepted' and used_at is null and expires_at > now()`.
-The consenter can revoke an accepted, unused consent, which sets `expires_at` to now.
+The consenter can revoke an accepted, unused consent, which sets its status to `revoked` (a value
+added by migration 0002). Each consent belongs to the friendship it was requested under (`friendship_id`, also migration
+0002), so removing the friend deletes the consents in the same statement, and becoming friends
+again never revives them.
 
 ```sql
 create table public.scam_consents (
   id            uuid primary key default gen_random_uuid(),
   requester_id  uuid not null references public.users(id) on delete cascade,  -- who will receive the call
   consenter_id  uuid not null references public.users(id) on delete cascade,  -- whose profile and voice are used
+  friendship_id uuid not null references public.friendships(id) on delete cascade,  -- migration 0002
   status        consent_status not null default 'pending',
   requested_at  timestamptz not null default now(),
   responded_at  timestamptz,
@@ -222,6 +226,7 @@ create unique index scam_consents_one_pending_idx on public.scam_consents(reques
   where status = 'pending';
 create index scam_consents_requester_id_idx on public.scam_consents(requester_id, status);
 create index scam_consents_consenter_id_idx on public.scam_consents(consenter_id, status);
+create index scam_consents_friendship_id_idx on public.scam_consents(friendship_id);
 create index scam_consents_usable_idx on public.scam_consents(requester_id, expires_at)
   where status = 'accepted' and used_at is null;
 ```
@@ -393,8 +398,8 @@ through the backend.
   received. The backend also deletes their files from Storage. On other users' calls that
   impersonated them, `persona_user_id` and `consent_id` become null and only the `persona_name`
   snapshot remains.
-- **Remove friend** deletes the `friendships` row. Any open consents stop being usable, because the
-  backend checks the friendship before starting a call.
+- **Remove friend** deletes the `friendships` row, and with it every consent between the two users
+  (`friendship_id ... on delete cascade`). Past calls keep their snapshots; `consent_id` becomes null.
 - **Delete scenario** sets `scenario_id` to null on past calls, which keep the `scenario_title`
   snapshot.
 - **Call recordings**: deleted after 30 days (scheduled job). Results are kept until the user deletes
