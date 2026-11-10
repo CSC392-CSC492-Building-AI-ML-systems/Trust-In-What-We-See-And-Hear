@@ -194,6 +194,8 @@ def test_decline_friend_request_deletes_it(db_client, db):
     response = db_client.post(f"/api/v1/friend-requests/{REQUEST_ID}/decline")
     assert response.status_code == 204
     params = db.sent("DELETE", "friendships")[0].url.params
+    # Only this request, only if it was sent to the current user, only while pending.
+    assert params["id"] == f"eq.{REQUEST_ID}"
     assert params["addressee_id"] == f"eq.{ME}"
     assert params["status"] == "eq.pending"
 
@@ -202,23 +204,29 @@ def test_declining_unknown_request_is_404(db_client, db):
     db.on("DELETE", "friendships", rows())
     response = db_client.post(f"/api/v1/friend-requests/{REQUEST_ID}/decline")
     assert response.status_code == 404
+    assert response.json()["detail"]["code"] == "friend_request_not_found"
 
 
 # GET /friends and DELETE /friends/{user_id}
 
 
-def test_list_friends(db_client, db):
+@pytest.mark.parametrize(("requester", "addressee"), [(ME, FRIEND), (FRIEND, ME)])
+def test_list_friends(db_client, db, requester, addressee):
     db.on(
         "GET",
         "friendships",
-        rows(friendship(ME, FRIEND, "accepted", "2026-11-09T10:00:00+00:00")),
+        rows(friendship(requester, addressee, "accepted", "2026-11-09T10:00:00+00:00")),
     )
     response = db_client.get("/api/v1/friends")
     assert response.status_code == 200
+    # The other user is listed, whichever side sent the original request.
     assert response.json()["items"] == [
         {**FRIEND_PUBLIC, "friends_since": "2026-11-09T10:00:00Z"}
     ]
-    assert db.sent("GET", "friendships")[0].url.params["status"] == "eq.accepted"
+    params = db.sent("GET", "friendships")[0].url.params
+    # Only the current user's friendships.
+    assert params["or"] == f"(requester_id.eq.{ME},addressee_id.eq.{ME})"
+    assert params["status"] == "eq.accepted"
 
 
 def test_remove_friend(db_client, db):

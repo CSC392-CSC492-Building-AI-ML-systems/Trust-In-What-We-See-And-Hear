@@ -103,6 +103,7 @@ def test_request_consent_from_non_friend_is_409(db_client, db):
 def test_pending_friend_request_is_not_a_friendship(db_client, db):
     db.on("GET", "friendships", rows({"status": "pending", "requester_id": str(ME)}))
     response = db_client.post("/api/v1/consents", json={"consenter_user_id": str(FRIEND)})
+    assert response.status_code == 409
     assert response.json()["detail"]["code"] == "not_friends"
 
 
@@ -177,6 +178,30 @@ def test_consent_is_not_usable_while_voice_is_not_ready(db_client, db, voice_sta
     assert item["usable"] is False
 
 
+def test_expired_consent_is_not_usable(db_client, db):
+    # Listing filters on the database clock; the flag must agree if one slips through.
+    expired = consent(status="accepted", expires_at="2026-11-10T11:59:00+00:00")
+    db.on("GET", "scam_consents", rows(expired))
+    [item] = db_client.get("/api/v1/consents").json()["items"]
+    assert item["usable"] is False
+
+
+@pytest.mark.parametrize(
+    ("query", "filters"),
+    [
+        ("", {"or": f"(requester_id.eq.{ME},consenter_id.eq.{ME})"}),
+        ("?direction=outgoing", {"requester_id": f"eq.{ME}"}),
+    ],
+)
+def test_list_consent_requests_is_scoped_to_the_current_user(db_client, db, query, filters):
+    db.on("GET", "scam_consents", rows())
+    assert db_client.get(f"/api/v1/consents/requests{query}").status_code == 200
+    params = db.sent("GET", "scam_consents")[0].url.params
+    for name, value in filters.items():
+        assert params[name] == value
+    assert params["status"] == "eq.pending"
+
+
 def test_list_incoming_consent_requests(db_client, db):
     db.on("GET", "scam_consents", rows(consent(requester=FRIEND, consenter=ME)))
     response = db_client.get("/api/v1/consents/requests?direction=incoming")
@@ -247,7 +272,10 @@ def test_decline_consent(db_client, db):
     assert response.status_code == 200
     assert response.json()["status"] == "declined"
     request = db.sent("PATCH", "scam_consents")[0]
+    # Only a pending request sent to the current user; an accepted one is revoked instead.
+    assert request.url.params["id"] == f"eq.{CONSENT_ID}"
     assert request.url.params["consenter_id"] == f"eq.{ME}"
+    assert request.url.params["status"] == "eq.pending"
     assert body(request) == {"status": "declined", "responded_at": NOW_ISO}
 
 
@@ -297,6 +325,7 @@ def test_use_consent_marks_it_used(db):
     request = db.sent("PATCH", "scam_consents")[0]
     # The update itself re-checks the conditions on the database's clock, so two
     # calls cannot both use it and a late request cannot use an expired consent.
+    assert request.url.params["id"] == f"eq.{CONSENT_ID}"
     assert request.url.params["requester_id"] == f"eq.{ME}"
     assert request.url.params["status"] == "eq.accepted"
     assert request.url.params["used_at"] == "is.null"

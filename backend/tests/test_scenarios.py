@@ -96,10 +96,14 @@ def test_list_scenarios_hides_built_in_prompts(db_client, db):
     assert db.sent("GET", "scam_scenarios")[0].url.params["or"] == VISIBLE
 
 
-def test_get_scenario(db_client, db):
-    db.on("GET", "scam_scenarios", rows(scenario_row()))
+@pytest.mark.parametrize(
+    ("created_by", "prompt"), [(ME, "You are a bank fraud agent..."), (None, None)]
+)
+def test_get_scenario(db_client, db, created_by, prompt):
+    db.on("GET", "scam_scenarios", rows(scenario_row(created_by=created_by)))
     response = db_client.get(f"/api/v1/scenarios/{SCENARIO_ID}")
     assert response.status_code == 200
+    assert response.json()["system_prompt"] == prompt
     params = db.sent("GET", "scam_scenarios")[0].url.params
     assert params["id"] == f"eq.{SCENARIO_ID}"
     assert params["or"] == VISIBLE
@@ -137,6 +141,14 @@ def test_update_scenario_not_owned(db_client, db, visible, status, code):
     response = db_client.put(f"/api/v1/scenarios/{SCENARIO_ID}", json={"title": "Mine now"})
     assert response.status_code == status
     assert response.json()["detail"]["code"] == code
+
+
+def test_empty_update_returns_the_scenario_unchanged(db_client, db):
+    db.on("GET", "scam_scenarios", rows(scenario_row()))
+    response = db_client.put(f"/api/v1/scenarios/{SCENARIO_ID}", json={})
+    assert response.status_code == 200
+    assert response.json()["title"] == "Bank fraud alert"
+    assert db.sent("GET", "scam_scenarios")[0].url.params["or"] == VISIBLE
 
 
 @pytest.mark.parametrize("payload", [{"title": None}, {"created_by": str(ME)}])
