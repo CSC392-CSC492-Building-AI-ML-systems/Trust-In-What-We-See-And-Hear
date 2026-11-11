@@ -3,8 +3,10 @@ import json
 import shutil
 import struct
 import subprocess
+import sys
 import wave
 import zlib
+from collections import deque
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
@@ -255,6 +257,39 @@ def test_decode_without_a_runnable_ffmpeg_is_unavailable(ffmpeg_path):
     with pytest.raises(AudioProcessingUnavailableError):
         decode_blocking(wav(7), ffmpeg_path=ffmpeg_path, sample_rate=24000, max_seconds=60)
 
+
+def test_only_the_end_of_ffmpeg_errors_is_kept():
+    # A crafted file can make ffmpeg print an error per packet (100 MB seen).
+    tail = deque()
+    audio_module.keep_tail(io.BytesIO(b"x" * 1_000_000 + b"last line"), tail)
+    kept = b"".join(tail)
+    assert kept.endswith(b"last line")
+    assert len(kept) < 2 * audio_module.STDERR_TAIL_BYTES
+
+
+@pytest.mark.parametrize(
+    ("soft", "hard", "expected"),
+    [
+        (-1, -1, audio_module.MAX_MEMORY_BYTES),  # no limit of its own
+        (512 * 1024**2, -1, 512 * 1024**2),  # a lower limit cannot be raised
+        (-1, 768 * 1024**2, 768 * 1024**2),
+        (4 * 1024**3, 4 * 1024**3, audio_module.MAX_MEMORY_BYTES),
+    ],
+)
+def test_memory_limit_never_exceeds_the_servers_own(soft, hard, expected):
+    assert audio_module.memory_limit_bytes(soft, hard, -1) == expected
+
+
+@pytest.mark.parametrize("status", [125, 126, 127])
+def test_wrapper_setup_failures_are_unavailable_not_bad_audio(monkeypatch, status):
+    monkeypatch.setattr(sys, "platform", "linux")
+    with pytest.raises(AudioProcessingUnavailableError):
+        audio_module._run([sys.executable, "-c", f"raise SystemExit({status})"])
+
+
+def test_ffmpeg_rejection_is_bad_audio(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert audio_module._run([sys.executable, "-c", "raise SystemExit(1)"]) is False
 
 # Crafted Matroska files (from the security review). Each builds an EBML element.
 def ebml(element_id, payload):

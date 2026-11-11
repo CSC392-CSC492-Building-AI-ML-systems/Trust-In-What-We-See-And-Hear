@@ -12,8 +12,8 @@ The upload is untrusted, so ffmpeg runs as a separate process with:
   read other files or fetch URLs), and only the containers and audio decoders
   browsers produce;
 - at most `MAX_STREAMS` streams, no single allocation over
-  `MAX_ALLOCATION_BYTES` and, on Linux and macOS, at most `MAX_MEMORY_BYTES` of
-  memory in all (crafted Matroska files can otherwise make each stream expand
+  `MAX_ALLOCATION_BYTES` and, on Linux, at most `MAX_MEMORY_BYTES` of memory
+  in all (crafted Matroska files can otherwise make each stream expand
   compressed data);
 - output stopped just past the longest allowed length and capped in bytes too,
   since a crafted file can repeat timestamps so that `-t` never triggers;
@@ -25,11 +25,13 @@ The client's file name and content type are ignored.
 
 import io
 import logging
-import os
 import shutil
 import subprocess
+import sys
 import tempfile
+import threading
 import wave
+from collections import deque
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -52,7 +54,8 @@ ALLOWED_DECODERS = (
 MAX_STREAMS = 2  # audio, plus video if the recording has it
 MAX_ALLOCATION_BYTES = 16 * 1024 * 1024
 # Virtual memory, so it includes ffmpeg's shared libraries (about 256 MiB for a
-# typical Linux build). Not enforced on Windows, which is only used for development.
+# typical Linux build). Enforced on Linux only; Windows and macOS are only used
+# for development.
 MAX_MEMORY_BYTES = 1024 * 1024 * 1024
 MAX_CONCURRENT_DECODES = 2
 # How long an upload waits for a free decoder before giving up.
@@ -60,6 +63,12 @@ DECODER_WAIT_SECONDS = 10
 DECODE_TIMEOUT_SECONDS = 20
 OUTPUT_SAMPLE_BYTES = 2  # 16-bit mono
 WAV_HEADER_ALLOWANCE = 1024
+# Only the end of ffmpeg's error output is kept: a crafted file can make it
+# print an error for every packet.
+STDERR_TAIL_BYTES = 4096
+# Exit statuses of the Linux wrapper, not of ffmpeg: the memory limit could not
+# be set (125), or ffmpeg could not be started (126, 127).
+SETUP_FAILURE_STATUSES = {125, 126, 127}
 
 
 class AudioProcessingUnavailableError(Exception):
@@ -164,34 +173,65 @@ def _ffmpeg_command(
         "-ac", "1", "-ar", str(sample_rate), "-c:a", "pcm_s16le", "-f", "wav",
         str(target),
     ]  # fmt: skip
-    if os.name == "posix":
+    if sys.platform.startswith("linux"):
         # Limit the whole process's memory: the shell sets the limit, then
-        # becomes ffmpeg.
-        limit_kib = str(MAX_MEMORY_BYTES // 1024)
-        command = ["/bin/sh", "-c", 'ulimit -v "$0" && exec "$@"', limit_kib, *command]
+        # becomes ffmpeg. Never above a limit the server already has, which the
+        # shell could not raise.
+        import resource  # Unix only
+
+        soft, hard = resource.getrlimit(resource.RLIMIT_AS)
+        limit_kib = str(memory_limit_bytes(soft, hard, resource.RLIM_INFINITY) // 1024)
+        command = [
+            "/bin/sh", "-c", 'ulimit -v "$0" || exit 125; exec "$@"', limit_kib, *command
+        ]  # fmt: skip
     return command
+
+
+def memory_limit_bytes(soft: int, hard: int, unlimited: int) -> int:
+    """MAX_MEMORY_BYTES, or the server's own limit if that is lower."""
+    inherited = [limit for limit in (soft, hard) if limit != unlimited]
+    return min([MAX_MEMORY_BYTES, *inherited])
 
 
 def _run(command: list[str]) -> bool:
     try:
-        result = subprocess.run(
-            command,
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            timeout=DECODE_TIMEOUT_SECONDS,
-            check=False,
+        process = subprocess.Popen(
+            command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
         )
-    except subprocess.TimeoutExpired:
-        logger.warning("ffmpeg took over %s seconds; rejecting the upload.", DECODE_TIMEOUT_SECONDS)
-        return False
     except OSError as exc:
         # Not executable, a directory, out of process handles, ...
         raise AudioProcessingUnavailableError(f"Could not start ffmpeg: {exc}") from exc
-    if result.returncode != 0:
-        logger.info("ffmpeg rejected an upload: %s", result.stderr[-500:].decode(errors="replace"))
+    assert process.stderr is not None
+    tail: deque[bytes] = deque()
+    reader = threading.Thread(target=keep_tail, args=(process.stderr, tail), daemon=True)
+    reader.start()
+    try:
+        status = process.wait(timeout=DECODE_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+        logger.warning("ffmpeg took over %s seconds; rejecting the upload.", DECODE_TIMEOUT_SECONDS)
+        return False
+    finally:
+        reader.join(timeout=5)
+        process.stderr.close()
+    errors = b"".join(tail)[-STDERR_TAIL_BYTES:].decode(errors="replace")
+    if status in SETUP_FAILURE_STATUSES and sys.platform.startswith("linux"):
+        raise AudioProcessingUnavailableError(f"Could not start ffmpeg ({status}): {errors}")
+    if status != 0:
+        logger.info("ffmpeg rejected an upload: %s", errors)
         return False
     return True
 
+
+def keep_tail(stream, tail: deque[bytes]) -> None:
+    """Read the stream to the end, keeping only its last STDERR_TAIL_BYTES."""
+    size = 0
+    for chunk in iter(lambda: stream.read(4096), b""):
+        tail.append(chunk)
+        size += len(chunk)
+        while size - len(tail[0]) >= STDERR_TAIL_BYTES:
+            size -= len(tail.popleft())
 
 def _read_decoded(output: bytes) -> DecodedAudio | None:
     try:
