@@ -1,6 +1,5 @@
-import { PagePlaceholder } from "@/components/page-placeholder";
-import { UsersRound } from "lucide-react";
+import { FriendsPanel } from "@/components/friends-panel";
 
 export default function FriendsPage() {
-  return <PagePlaceholder title="Friends" description="Manage trusted contacts and explicit simulation permissions." icon={UsersRound} />;
+  return <FriendsPanel />;
 }
