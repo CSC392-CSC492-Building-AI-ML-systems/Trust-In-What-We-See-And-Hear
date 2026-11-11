@@ -1,9 +1,16 @@
 # Database Schema (Draft / Mock)
 
 > Status: **Draft, pending team review**. Updated for the friends and consent-based direction.
+>
+> The SQL below is applied by the migrations in [`migrations/`](migrations/), which are the source
+> of truth. When the schema changes, add a new migration and update this document to match (see
+> [README.md](README.md)).
 
-Database: **Supabase (Postgres)**. Auth: **Supabase Auth** (`auth.users`), which issues the JWT
-returned by `Login`. There is no session table in our schema.
+Database: **Supabase (Postgres)**. Auth: **Supabase Auth** (`auth.users`). The frontend signs users
+up and in (email and password; no other providers for now) directly with Supabase, and sends
+the resulting access token (a JWT) to the backend, which verifies it. The backend has no login or
+registration endpoints and there is no session table in our schema. See
+[docs/authentication.md](../docs/authentication.md).
 Binary files (voice samples, Chatterbox `.pt` files, call recordings) live in **Supabase Storage**,
 and the tables only store the storage path.
 
@@ -13,8 +20,8 @@ and the tables only store the storage path.
 
 | Table | Purpose | Main endpoints |
 |---|---|---|
-| `auth.users` | Managed by Supabase Auth (email, password hash) | `Login`, `Register` |
-| `users` | App-level profile for each user (name, ID verification, onboarding answers) | `Register`, `VerifyUser`, `finishOnboarding`, `getUserInfo`, `editUserInfo` |
+| `auth.users` | Managed by Supabase Auth (email, password hash) | None (Supabase Auth on the client) |
+| `users` | App-level profile for each user (name, ID verification, onboarding answers) | `finishOnboarding`, `VerifyUser`, `getUserInfo`, `editUserInfo` |
 | `friendships` | Friend requests and accepted friendships between two users | `sendFriendRequest`, `acceptFriendRequest`, `declineFriendRequest`, `getFriendsList`, `removeFriend` |
 | `voices` | Each user's own cloned voice (Chatterbox `.pt` file) | `trainVoice` |
 | `scam_consents` | Time-limited permission from a friend to use their profile and voice | `RequestConsent`, `AcceptConsent`, `DeclineConsent`, `getConsents` |
@@ -48,7 +55,7 @@ spotting a scam that uses a clone of their friend Sam's voice:
 1. Alex sends a `RequestConsent` request for Sam, which creates a `pending` row in `scam_consents`.
 2. Sam accepts through `AcceptConsent`. The row becomes `accepted`, and `expires_at` is set to a
    short time from now. Or Sam declines through `DeclineConsent`, and the row becomes `declined`.
-3. `getConsents` returns Alex's accepted consents that have not expired.
+3. `getConsents` returns Alex's accepted consents that have not been used or expired.
 4. Alex chooses which consenting friend to use (here, Sam) and a scenario. The AI then holds the
    simulated call with Alex, using Sam's voice and profile. Simulated calls do not go through the
    phone network.
@@ -56,17 +63,19 @@ spotting a scam that uses a clone of their friend Sam's voice:
 On a simulated call, `user_id` is Alex (who receives the call) and `persona_user_id` is Sam (who is
 being impersonated).
 
-Before starting a simulated call, the backend must check that the consent is `accepted` and not
-expired, that the two users are still friends, and that Sam's voice is `ready`.
+Before starting a simulated call, the backend must check that the consent is `accepted`, unused
+and not expired, that the two users are still friends, and that Sam's voice is `ready`, then mark
+the consent used. `use_consent` in `backend/app/modules/consents/service.py` does all of this.
 
 ---
 
 ## 2. Enums
 
 ```sql
+-- No 'declined': declining a request or removing a friend deletes the row.
 create type friendship_status as enum ('pending', 'accepted');
 
-create type consent_status as enum ('pending', 'accepted', 'declined');
+create type consent_status as enum ('pending', 'accepted', 'declined', 'revoked');  -- 'revoked': migration 0002
 
 create type voice_status as enum ('uploaded', 'training', 'ready', 'failed');
 
@@ -91,16 +100,30 @@ create type call_outcome as enum (
 
 ### `users`
 
-One row per Supabase Auth user, created at registration.
+One row per Supabase Auth user who has finished onboarding. Sign-up goes straight from the frontend
+to Supabase, and only the backend writes to this table (see [Row Level Security](#4-row-level-security)),
+so `finishOnboarding`, the first backend call after sign-up, creates the row with the username,
+first and last name and privacy policy acceptance. A signed-in user with no row has not finished
+onboarding, and `getUserInfo` returns `404` for them.
+
+We keep this table instead of relying on `auth.users` alone because:
+
+- The `auth` schema is not exposed through Supabase's API, and we must not expose other users'
+  emails anyway. Friends find each other by `username` and see `first_name`/`last_name` from this table.
+- Every other table references `users(id)`, so a user must have a profile before they can add
+  friends, train a voice or receive calls.
+- Supabase `user_metadata` can be changed by the user themselves (`supabase.auth.updateUser`), so
+  it cannot hold trusted fields such as `verified_at`. This table is written only by the backend
+  (see [Row Level Security](#4-row-level-security)).
 
 ```sql
 create table public.users (
   id                        uuid primary key references auth.users(id) on delete cascade,
   username                  text unique not null,  -- how friends find each other
-  display_name              text not null,
+  first_name                text not null,
+  last_name                 text not null,
   preferred_language        text not null default 'en',
   verified_at               timestamptz,           -- null = ID not verified (VerifyUser)
-  onboarding_completed_at   timestamptz,           -- null = onboarding not finished (finishOnboarding)
   -- Answers used to tailor the scenario. Null if never given or removed by the user.
   -- e.g. {"city": "Toronto", "pet_name": "Max", "school": "UofT"}
   onboarding_answers        jsonb,
@@ -114,8 +137,9 @@ create table public.users (
 Notes:
 
 - Email and password are in `auth.users`, not duplicated here.
-- Removing onboarding answers through `editUserInfo` sets `onboarding_answers` to null but keeps
-  `onboarding_completed_at`, so the user is not sent back through onboarding.
+- There is no "onboarding completed" column: the row only exists once onboarding is finished, so
+  `created_at` is when it finished. Removing onboarding answers through `editUserInfo` sets
+  `onboarding_answers` to null but keeps the row, so the user is not sent back through onboarding.
 - ID documents are not stored here. `verified_at` only records that verification passed.
 
 ### `friendships`
@@ -171,21 +195,30 @@ create table public.voices (
 
 ### `scam_consents` (RequestConsent, AcceptConsent, DeclineConsent, getConsents)
 
-`expires_at` is set when the consent is accepted. Expiry is worked out by comparing `expires_at` to
-the current time, so no scheduled job is needed. An available consent is one where
-`status = 'accepted' and expires_at > now()`.
+Each consent covers **one call**. `expires_at` is set when the consent is accepted, and `used_at`
+(added in draft migration `0003_single_use_consents.sql`) when a call starts with it. The expiry
+stops a requester holding an unused consent until the consenter has forgotten giving it. Expiry is
+worked out by comparing `expires_at` to the current time, so no scheduled job is needed. An
+available consent is one where `status = 'accepted' and used_at is null and expires_at > now()`.
+The consenter can revoke an accepted, unused consent, which sets its status to `revoked` (a value
+added by migration 0002). Each consent belongs to the friendship it was requested under (`friendship_id`, also migration
+0002), so removing the friend deletes the consents in the same statement, and becoming friends
+again never revives them.
 
 ```sql
 create table public.scam_consents (
   id            uuid primary key default gen_random_uuid(),
   requester_id  uuid not null references public.users(id) on delete cascade,  -- who will receive the call
   consenter_id  uuid not null references public.users(id) on delete cascade,  -- whose profile and voice are used
+  friendship_id uuid not null references public.friendships(id) on delete cascade,  -- migration 0002
   status        consent_status not null default 'pending',
   requested_at  timestamptz not null default now(),
   responded_at  timestamptz,
   expires_at    timestamptz,
+  used_at       timestamptz,                     -- set when a call starts with it (migration 0002)
   check (requester_id <> consenter_id),
-  check (status <> 'accepted' or expires_at is not null)
+  check (status <> 'accepted' or expires_at is not null),
+  check (used_at is null or status = 'accepted')
 );
 
 -- Only one unanswered request at a time for each requester and friend
@@ -193,6 +226,9 @@ create unique index scam_consents_one_pending_idx on public.scam_consents(reques
   where status = 'pending';
 create index scam_consents_requester_id_idx on public.scam_consents(requester_id, status);
 create index scam_consents_consenter_id_idx on public.scam_consents(consenter_id, status);
+create index scam_consents_friendship_id_idx on public.scam_consents(friendship_id);
+create index scam_consents_usable_idx on public.scam_consents(requester_id, expires_at)
+  where status = 'accepted' and used_at is null;
 ```
 
 ### `scam_scenarios` (addScenario, removeScenario, UpdateScenario)
@@ -267,14 +303,43 @@ create table public.call_results (
 );
 ```
 
+### `updated_at` trigger
+
+`users`, `voices` and `scam_scenarios` have an `updated_at` column. A trigger sets it on every
+update, so the backend never has to.
+
+```sql
+create function public.set_updated_at()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$;
+
+create trigger users_set_updated_at
+  before update on public.users
+  for each row execute function public.set_updated_at();
+create trigger voices_set_updated_at
+  before update on public.voices
+  for each row execute function public.set_updated_at();
+create trigger scam_scenarios_set_updated_at
+  before update on public.scam_scenarios
+  for each row execute function public.set_updated_at();
+```
+
 ---
 
 ## 4. Row Level Security
 
 All writes go through the FastAPI backend, which uses the **service role key** after checking the
-user's JWT. Clients get read-only policies. This stops a user from using their own JWT to write
-directly to Supabase and, for example, set their own `verified_at`, accept a consent on a friend's
-behalf, or mark a voice as `ready`.
+user's JWT. Clients get read-only policies, and only when signed in (`to authenticated`), so
+anonymous requests made with just the publishable key can read nothing. This stops a user from
+using their own JWT to write directly to Supabase and, for example, set their own `verified_at`,
+accept a consent on a friend's behalf, or mark a voice as `ready`.
 
 ```sql
 alter table public.users          enable row level security;
@@ -287,24 +352,25 @@ alter table public.call_results   enable row level security;
 
 -- users: a user can only read their own row (this includes onboarding answers)
 create policy "own user (read)" on public.users
-  for select using (id = auth.uid());
+  for select to authenticated using (id = auth.uid());
 
 -- friendships / consents: readable by either user involved
 create policy "own friendships (read)" on public.friendships
-  for select using (auth.uid() in (requester_id, addressee_id));
+  for select to authenticated using (auth.uid() in (requester_id, addressee_id));
 create policy "own consents (read)" on public.scam_consents
-  for select using (auth.uid() in (requester_id, consenter_id));
+  for select to authenticated using (auth.uid() in (requester_id, consenter_id));
 
 -- voices / calls: owned directly by user_id
 create policy "own voice (read)" on public.voices
-  for select using (user_id = auth.uid());
+  for select to authenticated using (user_id = auth.uid());
 create policy "own calls (read)" on public.calls
-  for select using (user_id = auth.uid());
+  for select to authenticated using (user_id = auth.uid());
 
 -- child table: owned through its parent
 create policy "own call results (read)" on public.call_results
-  for select using (exists (select 1 from public.calls c
-                            where c.id = call_id and c.user_id = auth.uid()));
+  for select to authenticated
+  using (exists (select 1 from public.calls c
+                 where c.id = call_id and c.user_id = auth.uid()));
 
 -- scenarios: any signed-in user can read active built-in scenarios and their own
 create policy "read scenarios" on public.scam_scenarios
@@ -332,8 +398,8 @@ through the backend.
   received. The backend also deletes their files from Storage. On other users' calls that
   impersonated them, `persona_user_id` and `consent_id` become null and only the `persona_name`
   snapshot remains.
-- **Remove friend** deletes the `friendships` row. Any open consents stop being usable, because the
-  backend checks the friendship before starting a call.
+- **Remove friend** deletes the `friendships` row, and with it every consent between the two users
+  (`friendship_id ... on delete cascade`). Past calls keep their snapshots; `consent_id` becomes null.
 - **Delete scenario** sets `scenario_id` to null on past calls, which keep the `scenario_title`
   snapshot.
 - **Call recordings**: deleted after 30 days (scheduled job). Results are kept until the user deletes
@@ -345,16 +411,15 @@ through the backend.
 
 ## 6. Endpoint to table mapping
 
-Every endpoint requires a valid JWT except `Register` and `Login`.
+Every endpoint requires a valid Supabase access token. Sign-up and sign-in are not backend endpoints;
+the frontend calls Supabase Auth directly, which writes `auth.users`.
 
 | Endpoint | Reads | Writes |
 |---|---|---|
-| `POST Register` | – | `auth.users` (Supabase), `users` |
-| `POST Login` | `auth.users` (Supabase) | – |
 | `POST VerifyUser` | `users` | `users.verified_at` |
-| `POST finishOnboarding` | `users` | `users.onboarding_answers`, `users.onboarding_completed_at` |
+| `POST finishOnboarding` | `users` | `users` (creates the row: `username`, `first_name`/`last_name` copied from Supabase `user_metadata`, privacy policy acceptance, `onboarding_answers`) |
 | `GET getUserInfo` | `users`, `voices` | – |
-| `PUT editUserInfo` | `users` | `users` (not `verified_at` or `onboarding_completed_at`) |
+| `PUT editUserInfo` | `users` | `users` (not `verified_at`) |
 | `POST sendFriendRequest` | `users`, `friendships` | `friendships` |
 | `POST acceptFriendRequest` | `friendships` | `friendships` (addressee only) |
 | `POST declineFriendRequest` | `friendships` | `friendships` (deletes row; addressee only) |
