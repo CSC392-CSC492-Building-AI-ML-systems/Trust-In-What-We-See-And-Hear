@@ -5,7 +5,7 @@ import { getValidAccessToken } from "@/lib/supabase/auth-session";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect } from "react";
 
-const publicPaths = new Set(["/"]);
+const publicPaths = new Set(["/", "/auth/confirm"]);
 
 export function AuthGuard() {
   const pathname = usePathname();
