@@ -1,54 +1,129 @@
-"""Check an uploaded voice sample from its contents and measure its length.
+"""Decode an uploaded voice sample with ffmpeg and convert it to one stored format.
 
-Only PCM WAV is accepted for now, read with the standard library: it carries
-no compressed metadata, so parsing it never uses more memory than the upload
-itself, and the declared length can be checked against the audio actually
-present. The client's file name and content type are ignored.
+Browsers record WebM/Opus (Chrome, Firefox) or MP4/AAC (Safari), so those are
+accepted along with Ogg, MP3, FLAC and WAV. A compressed file's header can
+claim any length, so the only trustworthy length is the audio ffmpeg actually
+decodes. Every sample is stored as mono 16-bit PCM WAV at one sample rate, so
+the voice pipeline only ever reads one format.
 
-TBD with the frontend and the voice pipeline: whether to accept other formats.
-Browsers can record WAV (for example with an AudioWorklet); MediaRecorder's
-default WebM/Opus would need converting.
+The upload is untrusted, so ffmpeg runs as a separate process with:
+
+- only local file input (an HLS playlist, for example, could otherwise make it
+  read other files or fetch URLs), and only the containers and audio decoders
+  browsers produce;
+- a time limit, at most `MAX_CONCURRENT_DECODES` at once, and no single
+  allocation over `MAX_ALLOCATION_BYTES`;
+- output stopped just past the longest allowed length, so a long file cannot
+  produce a large result.
+
+The client's file name and content type are ignored.
 """
 
 import io
+import logging
+import subprocess
+import tempfile
+import threading
 import wave
 from dataclasses import dataclass
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 EXTENSION = "wav"
 CONTENT_TYPE = "audio/wav"
-SUPPORTED_FORMATS = "PCM WAV"
-MIN_SAMPLE_RATE = 8_000
-MAX_SAMPLE_RATE = 48_000
+SUPPORTED_FORMATS = "WebM, MP4/M4A, Ogg, MP3, FLAC or WAV"
+
+# ffmpeg demuxer and decoder names.
+ALLOWED_CONTAINERS = "matroska,mov,ogg,mp3,flac,wav"
+ALLOWED_DECODERS = (
+    "opus,libopus,vorbis,libvorbis,aac,aac_fixed,mp3,mp3float,flac,"
+    "pcm_u8,pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le,pcm_f64le"
+)
+MAX_CONCURRENT_DECODES = 2
+# How long an upload waits for a free decoder before giving up.
+DECODER_WAIT_SECONDS = 10
+DECODE_TIMEOUT_SECONDS = 20
+MAX_ALLOCATION_BYTES = 64 * 1024 * 1024
+
+_decoders = threading.BoundedSemaphore(MAX_CONCURRENT_DECODES)
+
+
+class AudioProcessingUnavailableError(Exception):
+    """ffmpeg is missing or busy, so the file could not be checked."""
 
 
 @dataclass(frozen=True)
-class AudioInfo:
+class DecodedAudio:
+    data: bytes  # mono 16-bit PCM WAV
     extension: str
     content_type: str
     duration_seconds: float
 
 
-def inspect_audio(data: bytes) -> AudioInfo | None:
-    """Return the file's format and length, or None if it is not complete PCM WAV audio."""
+def decode_audio(
+    data: bytes, *, ffmpeg_path: str, sample_rate: int, max_seconds: float
+) -> DecodedAudio | None:
+    """Decode the upload to mono WAV, or return None if it is not supported audio.
+
+    Blocking: call it from a worker thread. Raises
+    AudioProcessingUnavailableError if ffmpeg cannot be run.
+    """
+    if not _decoders.acquire(timeout=DECODER_WAIT_SECONDS):
+        raise AudioProcessingUnavailableError("All audio decoders are busy.")
     try:
-        with wave.open(io.BytesIO(data), "rb") as audio:
-            channels = audio.getnchannels()
-            sample_width = audio.getsampwidth()
-            rate = audio.getframerate()
-            frames = audio.getnframes()
-            payload = audio.readframes(frames)
-    except Exception:
-        # The parser raises several exception types on malformed chunks
-        # (wave.Error, EOFError, RuntimeError, ...); all mean invalid audio.
+        with tempfile.TemporaryDirectory(prefix="voice-") as folder:
+            source = Path(folder) / "upload"
+            target = Path(folder) / "decoded.wav"
+            source.write_bytes(data)
+            if not _run_ffmpeg(ffmpeg_path, source, target, sample_rate, max_seconds):
+                return None
+            return _read_decoded(target.read_bytes())
+    finally:
+        _decoders.release()
+
+
+def _run_ffmpeg(
+    ffmpeg_path: str, source: Path, target: Path, sample_rate: int, max_seconds: float
+) -> bool:
+    command = [
+        ffmpeg_path, "-nostdin", "-hide_banner", "-loglevel", "error",
+        "-max_alloc", str(MAX_ALLOCATION_BYTES), "-threads", "1",
+        # Input options: what ffmpeg may open and decode.
+        "-protocol_whitelist", "file",
+        "-format_whitelist", ALLOWED_CONTAINERS,
+        "-codec_whitelist", ALLOWED_DECODERS,
+        "-i", str(source),
+        # Output: the first audio stream only, with no metadata, cut just past
+        # the maximum so an overlong file is still reported as too long.
+        "-map", "0:a:0", "-map_metadata", "-1", "-fflags", "+bitexact",
+        "-t", str(max_seconds + 1),
+        "-ac", "1", "-ar", str(sample_rate), "-c:a", "pcm_s16le", "-f", "wav",
+        str(target),
+    ]  # fmt: skip
+    try:
+        result = subprocess.run(
+            command,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=DECODE_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise AudioProcessingUnavailableError(f"ffmpeg not found at {ffmpeg_path!r}.") from exc
+    except subprocess.TimeoutExpired:
+        logger.warning("ffmpeg took over %s seconds; rejecting the upload.", DECODE_TIMEOUT_SECONDS)
+        return False
+    if result.returncode != 0:
+        logger.info("ffmpeg rejected an upload: %s", result.stderr[-500:].decode(errors="replace"))
+        return False
+    return target.exists()
+
+
+def _read_decoded(output: bytes) -> DecodedAudio | None:
+    with wave.open(io.BytesIO(output), "rb") as audio:
+        frames = audio.getnframes()
+        rate = audio.getframerate()
+    if frames == 0:
         return None
-    if not (
-        1 <= channels <= 2
-        and 1 <= sample_width <= 4
-        and MIN_SAMPLE_RATE <= rate <= MAX_SAMPLE_RATE
-        and frames > 0
-    ):
-        return None
-    # The header's frame count must match the audio that is actually there.
-    if len(payload) != frames * channels * sample_width:
-        return None
-    return AudioInfo(EXTENSION, CONTENT_TYPE, frames / rate)
+    return DecodedAudio(output, EXTENSION, CONTENT_TYPE, frames / rate)

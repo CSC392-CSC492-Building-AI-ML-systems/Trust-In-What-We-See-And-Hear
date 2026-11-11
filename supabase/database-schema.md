@@ -387,7 +387,7 @@ through the backend.
 
 | Bucket | Path | Access |
 |---|---|---|
-| `voice-samples` (private) | `{user_id}/{upload_id}.wav` (PCM WAV for now) | backend only; never sent to a client |
+| `voice-samples` (private) | `{user_id}/{upload_id}.wav` (mono 16-bit WAV, converted from the upload) | backend only; never sent to a client |
 | `voice-models` (private) | `{user_id}/...` | backend only; never sent to a client |
 
 Draft migration `0004_voice_storage_buckets.sql` creates the two voice buckets. They have no

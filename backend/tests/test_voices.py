@@ -1,8 +1,11 @@
 import io
 import json
+import shutil
 import struct
+import subprocess
 import wave
 from datetime import UTC, datetime
+from pathlib import Path
 from uuid import UUID
 
 import httpx
@@ -10,9 +13,13 @@ import pytest
 
 from app.core import clock
 from app.integrations.supabase import SupabaseStorage, get_supabase_storage
-from app.modules.voices.audio import inspect_audio
+from app.modules.voices import audio as audio_module
+from app.modules.voices.audio import AudioProcessingUnavailableError, decode_audio
 from supabase_mock import body, postgres_error, rows
 
+pytestmark = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg is not installed")
+
+AUDIO = Path(__file__).parent / "fixtures" / "audio"  # seven-second recordings
 ME = UUID(int=1)  # matches the test_user fixture
 VOICE_ID = UUID(int=400)
 NOW = datetime(2026, 11, 10, 12, 0, tzinfo=UTC)
@@ -147,27 +154,106 @@ def upload(client, data=None, owner_consent="true", content_type="audio/wav"):
 # Audio checks
 
 
-def test_inspect_audio_reads_wav_length():
-    info = inspect_audio(wav(7, rate=16000))
-    assert (info.extension, info.content_type, info.duration_seconds) == ("wav", "audio/wav", 7.0)
+def decode(data, max_seconds=60.0):
+    return decode_audio(data, ffmpeg_path="ffmpeg", sample_rate=24000, max_seconds=max_seconds)
+
+
+def read_wav(data):
+    with wave.open(io.BytesIO(data), "rb") as audio:
+        return audio.getnchannels(), audio.getsampwidth(), audio.getframerate()
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["voice.webm", "voice-fragmented.mp4", "voice.m4a", "voice.ogg", "voice.mp3"],
+)
+def test_decode_converts_browser_recordings_to_mono_wav(name):
+    decoded = decode((AUDIO / name).read_bytes())
+    assert decoded.duration_seconds == pytest.approx(7.0, abs=0.1)
+    assert (decoded.extension, decoded.content_type) == ("wav", "audio/wav")
+    assert read_wav(decoded.data) == (1, 2, 24000)
+
+
+def test_decode_converts_wav():
+    decoded = decode(wav(7, rate=44100))
+    assert decoded.duration_seconds == pytest.approx(7.0)
+    assert read_wav(decoded.data) == (1, 2, 24000)
+
+
+def test_decode_measures_the_audio_not_the_header():
+    # The header claims ten seconds, but only two are there.
+    decoded = decode(wav(10)[: 44 + 2 * 8000 * 2])
+    assert decoded.duration_seconds == pytest.approx(2.0, abs=0.01)
+
+
+def test_decode_stops_just_past_the_maximum():
+    decoded = decode(wav(120), max_seconds=60)
+    assert 60 < decoded.duration_seconds <= 61
+
+
+def test_decode_drops_metadata():
+    source = (AUDIO / "voice.mp3").read_bytes()
+    assert b"Private title" in source
+    assert b"Private title" not in decode(source).data
 
 
 @pytest.mark.parametrize(
     "data",
     [
-        wav(10)[:44],  # header claims ten seconds, but no audio follows
-        wav(10)[:-100],  # truncated
+        wav(10)[:44],  # header only, no audio
         b"",
+        b"definitely not audio" * 50,
         b"RIFF" + b"\0" * 100,
-        b"ID3" + b"\0" * 1000,  # MP3 is not accepted
-        wav(10, rate=4000),  # below the supported sample rates
-        # A chunk claiming more data than its parent holds (raises RuntimeError).
+        b"ID3" + b"\0" * 1000,
+        # A chunk claiming more data than its parent holds.
         b"RIFF" + struct.pack("<I", 12) + b"WAVEJUNK" + struct.pack("<I", 100),
     ],
 )
-def test_inspect_audio_rejects_incomplete_or_other_files(data):
-    assert inspect_audio(data) is None
+def test_decode_rejects_files_without_audio(data):
+    assert decode(data) is None
 
+
+def encode(container, codec):
+    """Seven seconds of tone, encoded by ffmpeg."""
+    command = ["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "sine=d=7", "-c:a", codec, "-f", container, "-"]
+    return subprocess.run(command, capture_output=True, check=True).stdout
+
+
+@pytest.mark.parametrize(
+    ("container", "codec"),
+    [
+        ("avi", "pcm_s16le"),  # an allowed decoder in a container browsers do not produce
+        ("matroska", "pcm_s16be"),  # an allowed container with a decoder browsers do not use
+    ],
+)
+def test_decode_accepts_only_browser_containers_and_codecs(container, codec):
+    assert decode(encode(container, codec)) is None
+
+
+def test_decode_does_not_follow_playlists():
+    # An HLS playlist would make ffmpeg read other files (or URLs) on the server.
+    # Recent ffmpeg also refuses it without an .m3u8 name; older versions do not.
+    target = (AUDIO / "voice.mp3").resolve().as_uri()
+    playlist = f"#EXTM3U\n#EXT-X-TARGETDURATION:10\n#EXTINF:7,\n{target}\n#EXT-X-ENDLIST\n"
+    assert decode(playlist.encode()) is None
+
+
+def test_decode_gives_up_on_slow_files(monkeypatch):
+    monkeypatch.setattr(audio_module, "DECODE_TIMEOUT_SECONDS", 0.001)
+    assert decode((AUDIO / "voice.webm").read_bytes()) is None
+
+
+def test_decode_without_ffmpeg_is_unavailable():
+    with pytest.raises(AudioProcessingUnavailableError):
+        decode_audio(wav(7), ffmpeg_path="missing-ffmpeg-binary", sample_rate=24000, max_seconds=60)
+
+
+def test_decode_when_all_decoders_are_busy_is_unavailable(monkeypatch):
+    monkeypatch.setattr(audio_module, "_decoders", audio_module.threading.BoundedSemaphore(1))
+    monkeypatch.setattr(audio_module, "DECODER_WAIT_SECONDS", 0.01)
+    audio_module._decoders.acquire()
+    with pytest.raises(AudioProcessingUnavailableError):
+        decode(wav(7))
 
 # PUT /users/me/voice
 
@@ -203,6 +289,25 @@ def test_format_comes_from_contents_not_the_client(voice_client, db, storage):
     assert upload(voice_client, content_type="audio/mpeg").status_code == 200
     assert storage.uploads[0].headers["Content-Type"] == "audio/wav"
 
+
+def test_browser_recording_is_stored_as_wav(voice_client, db, storage):
+    db.on("GET", "voices", rows())
+    db.on("POST", "voices", rows(voice_row(), status=201))
+    response = upload(voice_client, (AUDIO / "voice.webm").read_bytes(), content_type="audio/webm")
+    assert response.status_code == 200
+    [stored] = storage.uploads
+    assert stored.headers["Content-Type"] == "audio/wav"
+    assert read_wav(stored.content) == (1, 2, 24000)
+    assert body(db.sent("POST", "voices")[0])["sample_duration_seconds"] == pytest.approx(7.0, abs=0.1)
+
+
+def test_upload_without_ffmpeg_is_503(application, voice_client, db, storage):
+    application.state.settings.ffmpeg_path = "missing-ffmpeg-binary"
+    response = upload(voice_client)
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "audio_processing_unavailable"
+    assert storage.requests == []
+    assert db.requests == []
 
 def test_replacing_a_sample_deletes_older_files(voice_client, db, storage):
     storage.put(SAMPLES, OLD_SAMPLE)

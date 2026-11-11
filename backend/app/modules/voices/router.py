@@ -4,11 +4,17 @@ from typing import Annotated, Any, NoReturn
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile, status
+from starlette.concurrency import run_in_threadpool
 
 from app.core import clock
 from app.core.auth import AuthenticatedUser, get_current_user
 from app.core.config import Settings
-from app.core.errors import api_error, error_responses, merge_responses
+from app.core.errors import (
+    SERVICE_UNAVAILABLE_RESPONSES,
+    api_error,
+    error_responses,
+    merge_responses,
+)
 from app.integrations import voice_pipeline
 from app.integrations.supabase import (
     SupabaseConflictError,
@@ -19,7 +25,11 @@ from app.integrations.supabase import (
     get_supabase_db,
     get_supabase_storage,
 )
-from app.modules.voices.audio import SUPPORTED_FORMATS, inspect_audio
+from app.modules.voices.audio import (
+    SUPPORTED_FORMATS,
+    AudioProcessingUnavailableError,
+    decode_audio,
+)
 from app.modules.voices.schemas import VoiceResponse
 
 logger = logging.getLogger(__name__)
@@ -68,6 +78,12 @@ NOT_FOUND = error_responses(
             status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
             ("unsupported_audio", f"The file is not {SUPPORTED_FORMATS} audio."),
         ),
+        # Joined with the shared 503 description, which a route's own 503 replaces.
+        SERVICE_UNAVAILABLE_RESPONSES,
+        error_responses(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            ("audio_processing_unavailable", "The audio decoder is missing or busy; retry."),
+        ),
     ),
 )
 async def upload_voice_sample(
@@ -91,7 +107,8 @@ async def upload_voice_sample(
 ) -> VoiceResponse:
     """Upload the current user's voice reference sample, replacing any previous one.
 
-    The file is checked before anything is stored. A replaced sample, and
+    The file is decoded and checked before anything is stored, and stored as
+    mono WAV whatever format was uploaded. A replaced sample, and
     anything derived from it, is deleted, and the voice goes back to `uploaded`.
     """
     settings: Settings = request.app.state.settings
@@ -108,7 +125,21 @@ async def upload_voice_sample(
             "file_too_large",
             f"The file must be at most {settings.voice_sample_max_bytes} bytes.",
         )
-    info = inspect_audio(data)
+    try:
+        info = await run_in_threadpool(
+            decode_audio,
+            data,
+            ffmpeg_path=settings.ffmpeg_path,
+            sample_rate=settings.voice_sample_rate,
+            max_seconds=settings.voice_sample_max_seconds,
+        )
+    except AudioProcessingUnavailableError:
+        logger.exception("Could not decode an uploaded voice sample.")
+        api_error(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "audio_processing_unavailable",
+            "Your recording could not be processed right now. Try again shortly.",
+        )
     if info is None:
         api_error(
             status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
@@ -132,7 +163,8 @@ async def upload_voice_sample(
     # A new object name per upload, so a failed upload never overwrites the
     # sample the database still points to.
     sample_path = f"{user.user_id}/{uuid4()}.{info.extension}"
-    await storage.upload(settings.voice_samples_bucket, sample_path, data, info.content_type)
+    # The converted audio is stored, not the upload.
+    await storage.upload(settings.voice_samples_bucket, sample_path, info.data, info.content_type)
 
     values = {
         "sample_storage_path": sample_path,

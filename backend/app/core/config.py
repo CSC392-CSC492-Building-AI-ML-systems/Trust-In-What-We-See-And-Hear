@@ -33,6 +33,11 @@ class Settings(BaseSettings):
     voice_sample_max_bytes: int = Field(default=10 * 1024 * 1024, gt=0)
     voice_sample_min_seconds: float = Field(default=5.0, gt=0)
     voice_sample_max_seconds: float = Field(default=60.0, gt=0)
+    # Uploads are converted to mono WAV at this rate. Chatterbox resamples its
+    # reference audio itself; 24 kHz matches its output rate. TBD with the pipeline.
+    voice_sample_rate: int = Field(default=24_000, ge=8_000, le=48_000)
+    # ffmpeg decodes uploaded audio. A name on PATH or a full path.
+    ffmpeg_path: str = "ffmpeg"
 
 
 @lru_cache
