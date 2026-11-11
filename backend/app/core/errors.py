@@ -1,8 +1,12 @@
 """Shared, documented error responses."""
 
+import math
 from typing import Any, Literal, NoReturn
 
-from fastapi import HTTPException, status
+from fastapi import HTTPException, Request, status
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 type Responses = dict[int | str, dict[str, Any]]
@@ -102,3 +106,27 @@ def unauthorized(message: str = "Invalid or expired bearer token.") -> NoReturn:
         detail=message,
         headers={"WWW-Authenticate": "Bearer"},
     )
+
+
+async def request_validation_error_handler(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
+    """FastAPI's default 422 response, safe for any input.
+
+    The default response echoes the invalid input, and a request body may contain
+    `NaN` or `Infinity`, which cannot be encoded as JSON. Without this they give `500`.
+    """
+    errors = _replace_non_finite(jsonable_encoder(exc.errors()))
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, content={"detail": errors}
+    )
+
+
+def _replace_non_finite(value: Any) -> Any:
+    if isinstance(value, float) and not math.isfinite(value):
+        return str(value)
+    if isinstance(value, dict):
+        return {key: _replace_non_finite(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_replace_non_finite(item) for item in value]
+    return value

@@ -5,11 +5,13 @@ from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
 
 from app.api.health import router as health_router
 from app.api.openapi import API_DESCRIPTION, OPENAPI_TAGS
 from app.api.router import router as api_router
 from app.core.config import Settings, get_settings
+from app.core.errors import request_validation_error_handler
 
 
 @asynccontextmanager
@@ -30,6 +32,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     application.state.settings = settings
+    application.add_exception_handler(
+        RequestValidationError, request_validation_error_handler
+    )
     application.include_router(health_router)
     application.include_router(api_router)
     return application

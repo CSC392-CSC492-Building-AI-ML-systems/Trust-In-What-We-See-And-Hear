@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from app.core.config import Settings
 from app.integrations.supabase import SupabaseAuth, get_supabase_auth
 from app.main import create_app
+from tests.conftest import PROTECTED_URL, add_protected_test_route
 
 USER_ID = UUID(int=42)
 
@@ -23,9 +24,6 @@ def make_token(**claims):
 
 
 AAL2_TOKEN = make_token(sub=str(USER_ID), aal="aal2")
-
-# Any protected route that is still a stub works; it returns 501 once authenticated.
-PROTECTED_URL = "/api/v1/calls"
 
 
 class SupabaseMock:
@@ -68,7 +66,9 @@ def test_auth_empty_settings_return_503(supabase_url, publishable_key):
         supabase_url=supabase_url,
         supabase_publishable_key=publishable_key,
     )
-    with TestClient(create_app(settings)) as client:
+    application = create_app(settings)
+    add_protected_test_route(application)
+    with TestClient(application) as client:
         response = client.get(
             PROTECTED_URL, headers={"Authorization": "Bearer t"}
         )
@@ -102,8 +102,8 @@ def test_protected_route_accepts_valid_token(supabase_client, supabase):
     response = supabase_client.get(
         PROTECTED_URL, headers={"Authorization": f"Bearer {AAL2_TOKEN}"}
     )
-    # Authentication passed; the profile route itself is still a stub.
-    assert response.status_code == 501
+    assert response.status_code == 200
+    assert response.json() == {"user_id": str(USER_ID)}
 
 
 def test_protected_route_when_supabase_is_down(supabase_client, supabase):
@@ -115,6 +115,22 @@ def test_protected_route_when_supabase_is_down(supabase_client, supabase):
         PROTECTED_URL, headers={"Authorization": "Bearer good"}
     )
     assert response.status_code == 503
+
+
+def test_every_api_operation_requires_authentication(application):
+    # Catches a route mounted outside `protected_router` by mistake. The OpenAPI
+    # schema is used because included routers are not listed in `application.routes`.
+    operations = [
+        (method.upper(), path, operation)
+        for path, item in application.openapi()["paths"].items()
+        if path.startswith("/api/v1")
+        for method, operation in item.items()
+    ]
+    assert operations
+    for method, path, operation in operations:
+        assert {"SupabaseBearer": []} in operation.get("security", []), (
+            f"{method} {path} is not protected"
+        )
 
 
 def test_app_shares_one_http_client(application):

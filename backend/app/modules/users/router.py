@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 from typing import Annotated, Any, Literal, NoReturn
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from pydantic import ValidationError
 
 from app.core.auth import AuthenticatedUser, get_current_user
 from app.core.errors import NOT_FOUND_RESPONSES, Responses, database_unavailable
@@ -25,7 +26,7 @@ CurrentUser = Annotated[AuthenticatedUser, Depends(get_current_user)]
 SupabaseDb = Annotated[SupabaseDatabase, Depends(get_supabase_db)]
 
 PROFILE_COLUMNS = (
-    "id,username,display_name,preferred_language,verified_at,onboarding_answers,created_at"
+    "id,username,first_name,last_name,preferred_language,verified_at,onboarding_answers,created_at"
 )
 # Default Postgres names for the primary key and the unique username constraint.
 PROFILE_EXISTS_CONSTRAINT = "users_pkey"
@@ -70,7 +71,7 @@ async def get_user_info(user: CurrentUser, supabase_db: SupabaseDb) -> UserProfi
     return _to_profile(rows[0])
 
 
-@router.put(
+@router.patch(
     "",
     response_model=UserProfileResponse,
     responses=PROFILE_NOT_FOUND_RESPONSES | USERNAME_TAKEN_RESPONSES,
@@ -117,7 +118,8 @@ async def finish_onboarding(
     row = {
         "id": str(user.user_id),
         "username": payload.username,
-        "display_name": payload.display_name,
+        "first_name": payload.first_name,
+        "last_name": payload.last_name,
         "onboarding_answers": payload.answers,
         "privacy_policy_version": request.app.state.settings.privacy_policy_version,
         "privacy_policy_accepted_at": datetime.now(UTC).isoformat(),
@@ -136,15 +138,20 @@ async def finish_onboarding(
 
 
 def _to_profile(row: dict[str, Any]) -> UserProfileResponse:
-    return UserProfileResponse(
-        user_id=row["id"],
-        username=row["username"],
-        display_name=row["display_name"],
-        preferred_language=row["preferred_language"],
-        verified=row["verified_at"] is not None,
-        onboarding_answers=row["onboarding_answers"],
-        created_at=row["created_at"],
-    )
+    try:
+        return UserProfileResponse(
+            user_id=row["id"],
+            username=row["username"],
+            first_name=row["first_name"],
+            last_name=row["last_name"],
+            preferred_language=row["preferred_language"],
+            verified=row["verified_at"] is not None,
+            onboarding_answers=row["onboarding_answers"],
+            created_at=row["created_at"],
+        )
+    except (KeyError, ValidationError):
+        # A row missing columns or holding invalid values is a malformed response.
+        database_unavailable()
 
 
 def _profile_not_found() -> NoReturn:

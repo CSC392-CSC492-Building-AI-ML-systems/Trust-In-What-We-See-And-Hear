@@ -102,13 +102,13 @@ create type call_outcome as enum (
 One row per Supabase Auth user who has finished onboarding. Sign-up goes straight from the frontend
 to Supabase, and only the backend writes to this table (see [Row Level Security](#4-row-level-security)),
 so `finishOnboarding`, the first backend call after sign-up, creates the row with the username,
-display name and privacy policy acceptance. A signed-in user with no row has not finished
+first and last name and privacy policy acceptance. A signed-in user with no row has not finished
 onboarding, and `getUserInfo` returns `404` for them.
 
 We keep this table instead of relying on `auth.users` alone because:
 
 - The `auth` schema is not exposed through Supabase's API, and we must not expose other users'
-  emails anyway. Friends find each other by `username` and see `display_name` from this table.
+  emails anyway. Friends find each other by `username` and see `first_name`/`last_name` from this table.
 - Every other table references `users(id)`, so a user must have a profile before they can add
   friends, train a voice or receive calls.
 - Supabase `user_metadata` can be changed by the user themselves (`supabase.auth.updateUser`), so
@@ -119,7 +119,8 @@ We keep this table instead of relying on `auth.users` alone because:
 create table public.users (
   id                        uuid primary key references auth.users(id) on delete cascade,
   username                  text unique not null,  -- how friends find each other
-  display_name              text not null,
+  first_name                text not null,
+  last_name                 text not null,
   preferred_language        text not null default 'en',
   verified_at               timestamptz,           -- null = ID not verified (VerifyUser)
   -- Answers used to tailor the scenario. Null if never given or removed by the user.
@@ -403,7 +404,7 @@ the frontend calls Supabase Auth directly, which writes `auth.users`.
 | Endpoint | Reads | Writes |
 |---|---|---|
 | `POST VerifyUser` | `users` | `users.verified_at` |
-| `POST finishOnboarding` | `users` | `users` (creates the row: `username`, `display_name`, privacy policy acceptance, `onboarding_answers`) |
+| `POST finishOnboarding` | `users` | `users` (creates the row: `username`, `first_name`, `last_name`, privacy policy acceptance, `onboarding_answers`) |
 | `GET getUserInfo` | `users`, `voices` | – |
 | `PUT editUserInfo` | `users` | `users` (not `verified_at`) |
 | `POST sendFriendRequest` | `users`, `friendships` | `friendships` |

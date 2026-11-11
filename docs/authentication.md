@@ -283,7 +283,7 @@ const { data, error } = await supabase.auth.signUp({
   email,
   password,
   options: {
-    data: { full_name: name }, // only used to pre-fill the onboarding form
+    data: { first_name: firstName, last_name: lastName }, // only used to pre-fill onboarding
   },
 });
 
@@ -429,13 +429,14 @@ export async function getCurrentUser() {
 
 The `(app)` layout already redirects to `/` when this returns `null`. A `503` throws here, which
 shows the error page without signing the user out. The profile looks like this (it replaces the
-current `first_name`/`last_name` type; show `display_name` in the sidebar):
+current profile type; show `first_name` and `last_name` in the sidebar):
 
 ```json
 {
   "user_id": "6f1c…",
   "username": "alex_morgan",
-  "display_name": "Alex Morgan",
+  "first_name": "Alex",
+  "last_name": "Morgan",
   "preferred_language": "en",
   "verified": false,
   "onboarding_answers": { "age_range": "25-34", "interests": ["technology"] },
@@ -452,16 +453,18 @@ The email is not part of the profile. If a page needs it, read it from Supabase:
 ```json
 {
   "username": "alex_morgan",
-  "display_name": "Alex Morgan",
+  "first_name": "Alex",
+  "last_name": "Morgan",
   "accept_privacy_policy": true,
   "answers": { "age_range": "25-34", "interests": ["technology", "travel"] }
 }
 ```
 
 - `username`: 3–30 lowercase letters, numbers or underscores. Lowercase what the user types.
-- `display_name`: 1–50 characters. Pre-fill from `user_metadata.full_name` (set at sign-up).
+- `first_name`, `last_name`: 1–50 characters each, surrounding spaces removed. Pre-fill from
+  `user_metadata.first_name` and `user_metadata.last_name` (set at sign-up).
 - `accept_privacy_policy`: must be `true`; this is the terms checkbox.
-- `answers`: stored as sent. The question set is still **TBD**.
+- `answers`: stored as sent, at most 10,000 bytes as JSON. The question set is still **TBD**.
 
 Responses:
 
@@ -470,9 +473,10 @@ Responses:
 - `409` with `detail.code === "profile_exists"`: onboarding is already done; go to `/dashboard`.
 - `422`: a field is invalid; `detail` says which.
 
-**Profile settings**: `PUT /api/v1/users/me` changes only the fields that are sent (`username`,
-`display_name`, `preferred_language`, `onboarding_answers`). Send `"onboarding_answers": null` to
-remove the stored answers. A taken username gets `409 username_taken`.
+**Profile settings**: `PATCH /api/v1/users/me` changes only the fields that are sent (`username`,
+`first_name`, `last_name`, `preferred_language`, `onboarding_answers`). Send `"onboarding_answers": null` to
+remove the stored answers; the other fields cannot be `null`. `preferred_language` is a language
+tag of at most 35 characters (`en`, `fr-CA`). A taken username gets `409 username_taken`.
 
 ### 2.8 Sign out (`components/sidebar.tsx`)
 
@@ -593,7 +597,7 @@ their next sign-in, the proxy sends them to `/mfa/setup`.
 - [ ] `app/auth/confirm/route.ts`
 - [ ] `/reset-password` page
 - [ ] `lib/api.ts`; `getCurrentUser` calls the backend and handles `401`, `403 mfa_required` and `404`
-- [ ] Onboarding collects username, display name and privacy policy acceptance (terms checkbox moved there)
+- [ ] Onboarding collects username, first and last name and privacy policy acceptance (terms checkbox moved there)
 - [ ] Sign out in the sidebar
 - [ ] Two-factor redirects in `proxy.ts` (`/mfa` or `/mfa/setup`, with `next`)
 - [ ] `/mfa/setup` (QR code, confirm code, removes unfinished setups)
@@ -621,7 +625,7 @@ their next sign-in, the proxy sends them to `/mfa/setup`.
   not finished).
 - `POST /api/v1/users/me/onboarding` creates the profile and returns it with `201`; `409` if the
   username is taken or onboarding is already done (section 2.7).
-- `PUT /api/v1/users/me` updates only the fields sent and returns the profile.
+- `PATCH /api/v1/users/me` updates only the fields sent and returns the profile.
 
 Full API reference: `http://localhost:8000/docs` while the backend is running.
 
