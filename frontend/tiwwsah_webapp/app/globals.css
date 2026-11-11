@@ -255,3 +255,30 @@ button { cursor: pointer; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; }
 }
+
+/* Profile Styles */
+.profile_card {
+  display: flex;
+  padding: 90px;
+  min-height: 390px;
+  margin-top: 30px;
+  place-items: center;
+  border: 2px solid var(--line);
+  border-radius: 16px;
+  background: var(--white);
+  box-shadow: 0 12px 35px rgba(30, 42, 86, .05);
+}
+
+.profile_info {
+  margin-left: auto;
+  display: grid;
+  border: 2px solid;
+}
+
+.profile_icon {
+  left: auto;
+  display: grid;
+  border: 2px solid;
+  border-radius: 50px;
+  padding: 30px;
+}
