@@ -74,6 +74,15 @@ button { cursor: pointer; }
 .auth-success { margin: -3px 0 0; padding: 9px 11px; border: 1px solid #bce7cd; border-radius: 8px; color: #17633a; background: #f0fbf4; font-size: 11px; line-height: 1.4; }
 .auth-privacy { display: flex; align-items: flex-start; justify-content: center; gap: 7px; margin: 18px 0 0; color: #8a94ad; font-size: 10.5px; line-height: 1.45; text-align: center; }
 .auth-privacy svg { width: 14px; height: 14px; flex: 0 0 14px; color: var(--violet-600); }
+.auth-callback-page { display: grid; min-height: 100vh; padding: 24px; place-items: center; background: linear-gradient(145deg, #f4f5fc, #fff); }
+.auth-callback-card { display: grid; width: min(440px, 100%); padding: 38px 32px; place-items: center; border: 1px solid var(--line); border-radius: 18px; background: white; text-align: center; box-shadow: 0 24px 70px rgba(15,27,67,.12); }
+.auth-callback-icon { display: grid; width: 52px; height: 52px; place-items: center; border-radius: 15px; color: var(--violet-600); background: var(--violet-100); }
+.auth-callback-icon svg { width: 25px; height: 25px; }
+.auth-callback-error { color: #a5263d; background: #fff0f3; }
+.auth-callback-loader { width: 19px; height: 19px; margin-top: 18px; color: var(--violet-600); }
+.auth-callback-card h1 { margin: 16px 0 7px; font-size: 22px; }
+.auth-callback-card p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.auth-callback-card a { margin-top: 20px; padding: 10px 15px; border-radius: 8px; color: white; background: var(--violet-600); font-size: 12px; font-weight: 750; }
 
 /* Onboarding */
 .onboarding-page { min-height: 100vh; padding: 0 28px 48px; background: radial-gradient(circle at 85% 5%, rgba(102,85,255,.12), transparent 27%), var(--canvas); }
