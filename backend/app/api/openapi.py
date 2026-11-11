@@ -3,7 +3,7 @@
 API_DESCRIPTION = """
 Backend API for Trust In What We See And Hear.
 
-**Status:** in progress. Authentication (Supabase Auth, two-factor required) and
+**Status:** in progress. Authentication (Supabase Auth) and
 the current user's profile (`/api/v1/users/me`) are implemented. Every other
 `/api/v1` operation currently returns `501 Not Implemented` once authenticated.
 
@@ -15,14 +15,8 @@ the current user's profile (`/api/v1/users/me`) are implemented. Every other
   Every `/api/v1` route requires `Authorization: Bearer <token>`, using the
   access token from the client's Supabase session. The acting user is taken
   from the token, never from the request.
-- **Two-factor authentication** is required for every user. The token must
-  come from a session where the user entered their authenticator code
-  (`aal2`); a password-only session (`aal1`) gets `403`.
 - **Authentication errors:** `401` means the token is missing, invalid or
-  expired; the client should sign the user in again. `403` with
-  `detail.code = "mfa_required"` means the token is valid but two-factor
-  authentication has not been completed; the client should ask for the
-  authenticator code (or set one up) without signing the user out. `503` means
+  expired; the client should sign the user in again. `503` means
   authentication is temporarily unavailable (for example Supabase is down or
   rate limiting); it says nothing about the token, so the client should retry
   without signing the user out.
