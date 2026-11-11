@@ -12,11 +12,13 @@ npm run dev
 
 Then open [http://localhost:3000](http://localhost:3000).
 
-## development notes:
+## Supabase login
 
-We store the users logged in account id in the browsers cookies which is used to pull their required data from the backend endpoints, we attach the cookie in the header of every request to the backend.
+Copy `.env.example` to `.env.local`, then fill in the values from the Supabase project's Connect dialog:
 
-keep an .env file in the root of frontend to configure backend api ip:
+```bash
+NEXT_PUBLIC_SUPABASE_URL=https://your-project-ref.supabase.co
+NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=sb_publishable_your_key
+```
 
-- name it NEXT_PUBLIC_API_URL
-- reference /lib/get-current-user.ts
+Email/password authentication and **Confirm email** must be enabled in Supabase. Add the verification return URL (for example, `http://localhost:3000/?email_verified=true`) to Authentication > URL Configuration > Redirect URLs. Registration creates only the Supabase Auth user; the application profile is created later by the Python backend after onboarding.

@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { createClient } from "@/lib/supabase/client";
 import { usePathname, useRouter } from "next/navigation";
 import {
   CircleUserRound,
@@ -14,7 +15,9 @@ import {
   UsersRound,
   X,
 } from "lucide-react";
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { getValidAccessToken } from "@/lib/supabase/auth-session";
+import { apiFetch } from '../lib/api-fetch'
 
 const navigation = [
   { href: "/simulations/new", label: "New Simulation", icon: Plus },
@@ -24,22 +27,41 @@ const navigation = [
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 
-type SidebarProps = {
-  firstName: string;
-  lastName: string;
-};
 
-export function Sidebar({ firstName, lastName }: SidebarProps) {
+export function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
   const [open, setOpen] = useState(false);
+  const [firstName, setFirstName] = useState();
+  const [lastName, setLastName] = useState();
   const [isSigningOut, setIsSigningOut] = useState(false);
+
+  async function loadProfile() {
+      try{
+          const response = await apiFetch(`${process.env.NEXT_PUBLIC_API_URL}/api/v1/users/me`,"GET")
+          if (!response.ok) {
+            throw new Error("Unable to load profile");
+          }
+          const data = await response.json()
+          setFirstName(data.first_name);
+          setLastName(data.last_name);
+      }
+      catch(ex){
+        console.error(ex);
+      }
+    }
+
+  useEffect(() => {
+    //pull profilename
+    loadProfile();
+  }, []);
 
   async function handleSignOut() {
     setIsSigningOut(true);
 
     try {
-      await fetch("/api/auth/test-session", { method: "DELETE" });
+      const supabase = createClient();
+      await supabase.auth.signOut();
     } finally {
       router.replace("/");
       router.refresh();

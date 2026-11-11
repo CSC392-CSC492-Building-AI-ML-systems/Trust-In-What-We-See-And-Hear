@@ -1,17 +1,11 @@
+import { AuthGuard } from "@/components/auth-guard";
 import { Sidebar } from "@/components/sidebar";
-import { getCurrentUser } from "@/lib/get-current-user";
-import { redirect } from "next/navigation";
 
-export default async function AppLayout({ children }: Readonly<{ children: React.ReactNode }>) {
-  const user = await getCurrentUser();
-
-  if (!user) {
-    redirect("/");
-  }
-
+export default function AppLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <div className="app-shell">
-      <Sidebar firstName={user.first_name} lastName={user.last_name} />
+      <AuthGuard /> 
+      <Sidebar />
       <main className="main-content">{children}</main>
     </div>
   );
