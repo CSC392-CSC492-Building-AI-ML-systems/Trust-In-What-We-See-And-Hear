@@ -33,7 +33,6 @@ Skeleton with provisional contracts. Authentication and the current user's profi
 Authentication is handled by Supabase Auth: the frontend signs users up and in (email and
 password) with supabase-js and sends the session's access token as
 `Authorization: Bearer <token>`. The backend only verifies that token with Supabase.
-Two-factor authentication is required: tokens from password-only sessions get `403`.
 Copy `.env.example` to `.env` and set `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY` and
 `SUPABASE_SECRET_KEY`; without them, protected routes return `503`.
 See [docs/authentication.md](../docs/authentication.md) for Supabase setup and the frontend flow.

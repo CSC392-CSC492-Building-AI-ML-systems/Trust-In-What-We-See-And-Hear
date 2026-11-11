@@ -2,8 +2,6 @@
    Code Generated with the help of ClaudeCode.
 """
 
-import base64
-import json
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
@@ -133,22 +131,6 @@ class SupabaseAuth:
         if not isinstance(body, dict):
             raise SupabaseUnavailableError("Supabase Auth returned an unexpected response.")
         return body
-
-
-def assurance_level(access_token: str) -> str | None:
-    """Return the token's `aal` claim: "aal1" (password only) or "aal2" (with 2FA).
-
-    The signature is not checked here, so only call this after Supabase has
-    accepted the same token (e.g. with `SupabaseAuth.get_user`).
-    Returns None if the claim cannot be read.
-    """
-    try:
-        payload = access_token.split(".")[1]
-        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
-    except (IndexError, ValueError):
-        return None
-    aal = claims.get("aal") if isinstance(claims, dict) else None
-    return aal if isinstance(aal, str) else None
 
 
 def _json_object_or_empty(response: httpx.Response) -> dict[str, Any]:

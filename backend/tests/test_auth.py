@@ -23,7 +23,7 @@ def make_token(**claims):
     return f"{encode({'alg': 'ES256'})}.{encode(claims)}.signature"
 
 
-AAL2_TOKEN = make_token(sub=str(USER_ID), aal="aal2")
+VALID_TOKEN = make_token(sub=str(USER_ID), aal="aal1")  # password only, no 2FA
 
 
 class SupabaseMock:
@@ -95,14 +95,14 @@ def test_protected_route_rejects_invalid_token(supabase_client, supabase):
 def test_protected_route_accepts_valid_token(supabase_client, supabase):
     def handler(request):
         assert request.url.path == "/auth/v1/user"
-        assert request.headers["Authorization"] == f"Bearer {AAL2_TOKEN}"
+        assert request.headers["Authorization"] == f"Bearer {VALID_TOKEN}"
         return httpx.Response(
             200, json={"id": str(USER_ID), "user_metadata": {"first_name": "Alex"}}
         )
 
     supabase.handler = handler
     response = supabase_client.get(
-        PROTECTED_URL, headers={"Authorization": f"Bearer {AAL2_TOKEN}"}
+        PROTECTED_URL, headers={"Authorization": f"Bearer {VALID_TOKEN}"}
     )
     assert response.status_code == 200
     assert response.json() == {
@@ -118,7 +118,7 @@ def test_missing_or_invalid_metadata_becomes_empty(supabase_client, supabase, me
         body["user_metadata"] = metadata
     supabase.handler = lambda request: httpx.Response(200, json=body)
     response = supabase_client.get(
-        PROTECTED_URL, headers={"Authorization": f"Bearer {AAL2_TOKEN}"}
+        PROTECTED_URL, headers={"Authorization": f"Bearer {VALID_TOKEN}"}
     )
     assert response.status_code == 200
     assert response.json()["user_metadata"] == {}
@@ -214,33 +214,3 @@ def test_non_token_errors_are_503(supabase_client, supabase, response):
         PROTECTED_URL, headers={"Authorization": "Bearer good"}
     )
     assert result.status_code == 503
-
-
-@pytest.mark.parametrize(
-    "token",
-    [
-        make_token(sub=str(USER_ID), aal="aal1"),  # password only
-        make_token(sub=str(USER_ID)),  # no aal claim
-        "not-a-jwt",
-        "a.!!!.c",  # payload is not base64
-        f"a.{base64.urlsafe_b64encode(b'[1, 2]').decode()}.c",  # payload is not an object
-    ],
-)
-def test_valid_token_without_mfa_is_403(supabase_client, supabase, token):
-    supabase.handler = lambda request: httpx.Response(200, json={"id": str(USER_ID)})
-    response = supabase_client.get(
-        PROTECTED_URL, headers={"Authorization": f"Bearer {token}"}
-    )
-    assert response.status_code == 403
-    assert response.json()["detail"]["code"] == "mfa_required"
-
-
-def test_rejected_token_is_401_even_if_it_claims_aal2(supabase_client, supabase):
-    # The aal claim is only trusted once Supabase has accepted the token.
-    supabase.handler = lambda request: httpx.Response(
-        403, json={"error_code": "bad_jwt", "msg": "invalid JWT"}
-    )
-    response = supabase_client.get(
-        PROTECTED_URL, headers={"Authorization": f"Bearer {AAL2_TOKEN}"}
-    )
-    assert response.status_code == 401
