@@ -3,6 +3,8 @@
 FastAPI parses (and spools to disk) a whole multipart body before route code
 or authentication runs, so the limit has to apply here, to every request,
 including chunked ones with no Content-Length.
+
+AI-assisted code (written with Claude Code), cited per the CSC398 AI policy.
 """
 
 from fastapi import HTTPException, status

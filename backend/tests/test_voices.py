@@ -1,3 +1,8 @@
+"""Tests for the voice endpoints and audio decoding (app/modules/voices).
+
+AI-assisted code (written with Claude Code), cited per the CSC398 AI policy.
+"""
+
 import io
 import json
 import shutil

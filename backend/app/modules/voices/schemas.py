@@ -1,3 +1,8 @@
+"""Response models for the voice endpoints.
+
+AI-assisted code (written with Claude Code), cited per the CSC398 AI policy.
+"""
+
 from datetime import datetime
 from typing import Literal
 

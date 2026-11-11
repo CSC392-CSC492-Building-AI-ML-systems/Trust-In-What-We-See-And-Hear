@@ -1,3 +1,8 @@
+"""Endpoints for the current user's voice sample: upload, status and delete.
+
+AI-assisted code (written with Claude Code), cited per the CSC398 AI policy.
+"""
+
 import logging
 from datetime import datetime, timedelta
 from typing import Annotated, Any, NoReturn

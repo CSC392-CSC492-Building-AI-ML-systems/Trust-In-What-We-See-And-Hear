@@ -21,6 +21,8 @@ The upload is untrusted, so ffmpeg runs as a separate process with:
   a free decoder without holding a worker thread.
 
 The client's file name and content type are ignored.
+
+AI-assisted code (written with Claude Code), cited per the CSC398 AI policy.
 """
 
 import io

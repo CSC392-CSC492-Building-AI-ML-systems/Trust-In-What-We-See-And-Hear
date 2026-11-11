@@ -5,6 +5,8 @@
 -- clients can neither read nor write these buckets; only the backend can,
 -- with the secret key. The size limit and types match the backend's defaults
 -- (VOICE_SAMPLE_MAX_BYTES and app/modules/voices/audio.py).
+--
+-- AI-assisted code (written with Claude Code), cited per the CSC398 AI policy.
 
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values

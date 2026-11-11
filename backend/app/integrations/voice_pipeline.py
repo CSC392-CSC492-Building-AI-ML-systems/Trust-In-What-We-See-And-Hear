@@ -4,6 +4,8 @@ Chatterbox is pretrained and clones a voice from a reference recording, so
 there is no per-user training. What the pipeline needs from a new sample is
 TBD: it may read the sample at call time, or derive a file from it once
 (stored in the voice-models bucket) and then set the voice to `ready`.
+
+AI-assisted code (written with Claude Code), cited per the CSC398 AI policy.
 """
 
 from uuid import UUID
