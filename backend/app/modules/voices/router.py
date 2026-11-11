@@ -4,7 +4,6 @@ from typing import Annotated, Any, NoReturn
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile, status
-from starlette.concurrency import run_in_threadpool
 
 from app.core import clock
 from app.core.auth import AuthenticatedUser, get_current_user
@@ -27,8 +26,8 @@ from app.integrations.supabase import (
 )
 from app.modules.voices.audio import (
     SUPPORTED_FORMATS,
+    AudioDecoder,
     AudioProcessingUnavailableError,
-    decode_audio,
 )
 from app.modules.voices.schemas import VoiceResponse
 
@@ -126,8 +125,8 @@ async def upload_voice_sample(
             f"The file must be at most {settings.voice_sample_max_bytes} bytes.",
         )
     try:
-        info = await run_in_threadpool(
-            decode_audio,
+        decoder: AudioDecoder = request.app.state.audio_decoder
+        info = await decoder.decode(
             data,
             ffmpeg_path=settings.ffmpeg_path,
             sample_rate=settings.voice_sample_rate,

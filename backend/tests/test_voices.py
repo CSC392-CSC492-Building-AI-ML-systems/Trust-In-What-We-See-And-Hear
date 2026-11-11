@@ -4,17 +4,24 @@ import shutil
 import struct
 import subprocess
 import wave
+import zlib
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
+import anyio
+import anyio.to_thread
 import httpx
 import pytest
 
 from app.core import clock
 from app.integrations.supabase import SupabaseStorage, get_supabase_storage
 from app.modules.voices import audio as audio_module
-from app.modules.voices.audio import AudioProcessingUnavailableError, decode_audio
+from app.modules.voices.audio import (
+    AudioDecoder,
+    AudioProcessingUnavailableError,
+    decode_blocking,
+)
 from supabase_mock import body, postgres_error, rows
 
 pytestmark = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg is not installed")
@@ -155,7 +162,7 @@ def upload(client, data=None, owner_consent="true", content_type="audio/wav"):
 
 
 def decode(data, max_seconds=60.0):
-    return decode_audio(data, ffmpeg_path="ffmpeg", sample_rate=24000, max_seconds=max_seconds)
+    return decode_blocking(data, ffmpeg_path="ffmpeg", sample_rate=24000, max_seconds=max_seconds)
 
 
 def read_wav(data):
@@ -243,17 +250,109 @@ def test_decode_gives_up_on_slow_files(monkeypatch):
     assert decode((AUDIO / "voice.webm").read_bytes()) is None
 
 
-def test_decode_without_ffmpeg_is_unavailable():
+@pytest.mark.parametrize("ffmpeg_path", ["missing-ffmpeg-binary", str(AUDIO)])  # absent; a folder
+def test_decode_without_a_runnable_ffmpeg_is_unavailable(ffmpeg_path):
     with pytest.raises(AudioProcessingUnavailableError):
-        decode_audio(wav(7), ffmpeg_path="missing-ffmpeg-binary", sample_rate=24000, max_seconds=60)
+        decode_blocking(wav(7), ffmpeg_path=ffmpeg_path, sample_rate=24000, max_seconds=60)
 
 
-def test_decode_when_all_decoders_are_busy_is_unavailable(monkeypatch):
-    monkeypatch.setattr(audio_module, "_decoders", audio_module.threading.BoundedSemaphore(1))
-    monkeypatch.setattr(audio_module, "DECODER_WAIT_SECONDS", 0.01)
-    audio_module._decoders.acquire()
-    with pytest.raises(AudioProcessingUnavailableError):
-        decode(wav(7))
+# Crafted Matroska files (from the security review). Each builds an EBML element.
+def ebml(element_id, payload):
+    for size_bytes in range(1, 9):
+        if len(payload) < (1 << (7 * size_bytes)) - 1:
+            size = ((1 << (7 * size_bytes)) | len(payload)).to_bytes(size_bytes, "big")
+            return bytes.fromhex(element_id) + size + payload
+    raise ValueError("too large")
+
+
+def ebml_uint(element_id, value):
+    return ebml(element_id, value.to_bytes(max(1, (value.bit_length() + 7) // 8), "big"))
+
+
+def matroska(tracks, blocks):
+    header = ebml("1a45dfa3", ebml("4282", b"matroska") + ebml_uint("4287", 4) + ebml_uint("4285", 2))
+    info = ebml("1549a966", ebml_uint("2ad7b1", 1_000_000))
+    cluster = ebml("1f43b675", ebml_uint("e7", 0) + b"".join(blocks))
+    return header + ebml("18538067", info + ebml("1654ae6b", b"".join(tracks)) + cluster)
+
+
+def pcm_track(number, extra=b""):
+    audio = ebml("e1", ebml("b5", struct.pack(">d", 24000)) + ebml_uint("9f", 1) + ebml_uint("6264", 16))
+    return ebml("ae", ebml_uint("d7", number) + ebml_uint("73c5", number) + ebml_uint("83", 2)
+                + ebml("86", b"A_PCM/INT/LIT") + extra + audio)  # fmt: skip
+
+
+def test_decode_output_is_capped_even_if_timestamps_repeat(monkeypatch):
+    # Header stripping expands each 4-byte block to a second of audio, every
+    # block at time zero, so `-t` alone never stops the decode.
+    written = []
+    run = audio_module._run
+
+    def run_and_measure(command):
+        result = run(command)
+        output = Path(command[-1])
+        written.append(output.stat().st_size if output.exists() else 0)
+        return result
+
+    monkeypatch.setattr(audio_module, "_run", run_and_measure)
+    stripped = ebml("6240", ebml_uint("5032", 1) + ebml("5034", ebml_uint("4254", 3) + ebml("4255", b"\0" * 48000)))
+    track = pcm_track(1, ebml("6d80", stripped))
+    data = matroska([track], [ebml("a3", b"\x81\x00\x00\x80\0\0")] * 1000)
+    assert len(data) < 100_000
+    decoded = decode(data)
+    # ffmpeg itself stopped writing, about one write past the cap (61 s of
+    # audio, 2.9 MB). Without the cap it writes 48 MB.
+    assert written and written[0] < 4 * 1024 * 1024
+    assert decoded is None or decoded.duration_seconds <= 61
+
+
+def test_decode_rejects_files_with_many_streams():
+    # Each track's private data is a zlib bomb; 16 of them used 500 MiB.
+    bomb = ebml("63a2", zlib.compress(b"\0" * 6 * 1024 * 1024))
+    compressed = ebml("6d80", ebml("6240", ebml_uint("5032", 2) + ebml("5034", ebml_uint("4254", 0))))
+    tracks = [pcm_track(n, bomb + compressed) for n in range(1, 17)]
+    assert decode(matroska(tracks, [ebml("a3", b"\x81\x00\x00\x80" + b"\0" * 4800)])) is None
+
+
+def run_async(function):
+    return anyio.run(function)
+
+
+def test_decoder_gives_up_when_all_decoders_are_busy(monkeypatch):
+    monkeypatch.setattr(audio_module, "DECODER_WAIT_SECONDS", 0.05)
+
+    async def scenario():
+        decoder = AudioDecoder()
+        await decoder.decode(wav(7), ffmpeg_path="ffmpeg", sample_rate=24000, max_seconds=60)
+        for _ in range(audio_module.MAX_CONCURRENT_DECODES):
+            await decoder._slots.acquire_on_behalf_of(object())
+        with pytest.raises(AudioProcessingUnavailableError):
+            await decoder.decode(wav(7), ffmpeg_path="ffmpeg", sample_rate=24000, max_seconds=60)
+
+    run_async(scenario)
+
+
+def test_waiting_uploads_do_not_hold_shared_threads(monkeypatch):
+    monkeypatch.setattr(audio_module, "DECODER_WAIT_SECONDS", 0.2)
+
+    async def scenario():
+        decoder = AudioDecoder()
+        await decoder.decode(wav(7), ffmpeg_path="ffmpeg", sample_rate=24000, max_seconds=60)
+        for _ in range(audio_module.MAX_CONCURRENT_DECODES):
+            await decoder._slots.acquire_on_behalf_of(object())
+        shared = anyio.to_thread.current_default_thread_limiter()
+
+        async def waiting_upload():
+            with pytest.raises(AudioProcessingUnavailableError):
+                await decoder.decode(wav(7), ffmpeg_path="ffmpeg", sample_rate=24000, max_seconds=60)
+
+        async with anyio.create_task_group() as group:
+            for _ in range(50):
+                group.start_soon(waiting_upload)
+            await anyio.sleep(0.05)
+            assert shared.borrowed_tokens == 0
+
+    run_async(scenario)
 
 # PUT /users/me/voice
 

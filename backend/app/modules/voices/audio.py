@@ -11,22 +11,31 @@ The upload is untrusted, so ffmpeg runs as a separate process with:
 - only local file input (an HLS playlist, for example, could otherwise make it
   read other files or fetch URLs), and only the containers and audio decoders
   browsers produce;
-- a time limit, at most `MAX_CONCURRENT_DECODES` at once, and no single
-  allocation over `MAX_ALLOCATION_BYTES`;
-- output stopped just past the longest allowed length, so a long file cannot
-  produce a large result.
+- at most `MAX_STREAMS` streams, no single allocation over
+  `MAX_ALLOCATION_BYTES` and, on Linux and macOS, at most `MAX_MEMORY_BYTES` of
+  memory in all (crafted Matroska files can otherwise make each stream expand
+  compressed data);
+- output stopped just past the longest allowed length and capped in bytes too,
+  since a crafted file can repeat timestamps so that `-t` never triggers;
+- a time limit, and at most `MAX_CONCURRENT_DECODES` at once. Uploads wait for
+  a free decoder without holding a worker thread.
 
 The client's file name and content type are ignored.
 """
 
 import io
 import logging
+import os
+import shutil
 import subprocess
 import tempfile
-import threading
 import wave
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
+
+import anyio
+import anyio.to_thread
 
 logger = logging.getLogger(__name__)
 
@@ -40,17 +49,21 @@ ALLOWED_DECODERS = (
     "opus,libopus,vorbis,libvorbis,aac,aac_fixed,mp3,mp3float,flac,"
     "pcm_u8,pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le,pcm_f64le"
 )
+MAX_STREAMS = 2  # audio, plus video if the recording has it
+MAX_ALLOCATION_BYTES = 16 * 1024 * 1024
+# Virtual memory, so it includes ffmpeg's shared libraries (about 256 MiB for a
+# typical Linux build). Not enforced on Windows, which is only used for development.
+MAX_MEMORY_BYTES = 1024 * 1024 * 1024
 MAX_CONCURRENT_DECODES = 2
 # How long an upload waits for a free decoder before giving up.
 DECODER_WAIT_SECONDS = 10
 DECODE_TIMEOUT_SECONDS = 20
-MAX_ALLOCATION_BYTES = 64 * 1024 * 1024
-
-_decoders = threading.BoundedSemaphore(MAX_CONCURRENT_DECODES)
+OUTPUT_SAMPLE_BYTES = 2  # 16-bit mono
+WAV_HEADER_ALLOWANCE = 1024
 
 
 class AudioProcessingUnavailableError(Exception):
-    """ffmpeg is missing or busy, so the file could not be checked."""
+    """ffmpeg is missing, cannot start or is busy, so the file could not be checked."""
 
 
 @dataclass(frozen=True)
@@ -61,46 +74,105 @@ class DecodedAudio:
     duration_seconds: float
 
 
-def decode_audio(
+class AudioDecoder:
+    """Runs ffmpeg in worker threads of its own, at most MAX_CONCURRENT_DECODES at once.
+
+    One per application. Its limiters are created on first use, inside the
+    event loop.
+    """
+
+    def __init__(self) -> None:
+        self._slots: anyio.CapacityLimiter | None = None
+        self._threads: anyio.CapacityLimiter | None = None
+
+    async def decode(
+        self, data: bytes, *, ffmpeg_path: str, sample_rate: int, max_seconds: float
+    ) -> DecodedAudio | None:
+        """Decode the upload to mono WAV, or return None if it is not supported audio."""
+        if self._slots is None or self._threads is None:
+            self._slots = anyio.CapacityLimiter(MAX_CONCURRENT_DECODES)
+            self._threads = anyio.CapacityLimiter(MAX_CONCURRENT_DECODES)
+        slots = self._slots
+        try:
+            with anyio.fail_after(DECODER_WAIT_SECONDS):
+                await slots.acquire()
+        except TimeoutError as exc:
+            raise AudioProcessingUnavailableError("All audio decoders are busy.") from exc
+        try:
+            # Its own thread limiter, so decoding never uses the threads the
+            # rest of the application shares.
+            return await anyio.to_thread.run_sync(
+                partial(
+                    decode_blocking,
+                    data,
+                    ffmpeg_path=ffmpeg_path,
+                    sample_rate=sample_rate,
+                    max_seconds=max_seconds,
+                ),
+                limiter=self._threads,
+            )
+        finally:
+            slots.release()
+
+
+def decode_blocking(
     data: bytes, *, ffmpeg_path: str, sample_rate: int, max_seconds: float
 ) -> DecodedAudio | None:
-    """Decode the upload to mono WAV, or return None if it is not supported audio.
+    """Decode in the current thread; see AudioDecoder.decode."""
+    executable = shutil.which(ffmpeg_path)
+    if executable is None:
+        raise AudioProcessingUnavailableError(f"ffmpeg not found at {ffmpeg_path!r}.")
+    max_output_bytes = int((max_seconds + 1) * sample_rate) * OUTPUT_SAMPLE_BYTES
+    with tempfile.TemporaryDirectory(prefix="voice-") as folder:
+        source = Path(folder) / "upload"
+        target = Path(folder) / "decoded.wav"
+        source.write_bytes(data)
+        command = _ffmpeg_command(
+            executable, source, target, sample_rate, max_seconds, max_output_bytes
+        )
+        if not _run(command) or not target.exists():
+            return None
+        if target.stat().st_size > max_output_bytes + 2 * WAV_HEADER_ALLOWANCE:
+            return None
+        return _read_decoded(target.read_bytes())
 
-    Blocking: call it from a worker thread. Raises
-    AudioProcessingUnavailableError if ffmpeg cannot be run.
-    """
-    if not _decoders.acquire(timeout=DECODER_WAIT_SECONDS):
-        raise AudioProcessingUnavailableError("All audio decoders are busy.")
-    try:
-        with tempfile.TemporaryDirectory(prefix="voice-") as folder:
-            source = Path(folder) / "upload"
-            target = Path(folder) / "decoded.wav"
-            source.write_bytes(data)
-            if not _run_ffmpeg(ffmpeg_path, source, target, sample_rate, max_seconds):
-                return None
-            return _read_decoded(target.read_bytes())
-    finally:
-        _decoders.release()
 
-
-def _run_ffmpeg(
-    ffmpeg_path: str, source: Path, target: Path, sample_rate: int, max_seconds: float
-) -> bool:
+def _ffmpeg_command(
+    executable: str,
+    source: Path,
+    target: Path,
+    sample_rate: int,
+    max_seconds: float,
+    max_output_bytes: int,
+) -> list[str]:
     command = [
-        ffmpeg_path, "-nostdin", "-hide_banner", "-loglevel", "error",
+        executable, "-nostdin", "-hide_banner", "-loglevel", "error",
         "-max_alloc", str(MAX_ALLOCATION_BYTES), "-threads", "1",
         # Input options: what ffmpeg may open and decode.
         "-protocol_whitelist", "file",
         "-format_whitelist", ALLOWED_CONTAINERS,
         "-codec_whitelist", ALLOWED_DECODERS,
+        "-max_streams", str(MAX_STREAMS),
         "-i", str(source),
         # Output: the first audio stream only, with no metadata, cut just past
         # the maximum so an overlong file is still reported as too long.
         "-map", "0:a:0", "-map_metadata", "-1", "-fflags", "+bitexact",
         "-t", str(max_seconds + 1),
+        # -t follows timestamps, which a crafted file can repeat; this does not
+        # (ffmpeg may overshoot it by one write, so the result is checked again).
+        "-fs", str(max_output_bytes + WAV_HEADER_ALLOWANCE),
         "-ac", "1", "-ar", str(sample_rate), "-c:a", "pcm_s16le", "-f", "wav",
         str(target),
     ]  # fmt: skip
+    if os.name == "posix":
+        # Limit the whole process's memory: the shell sets the limit, then
+        # becomes ffmpeg.
+        limit_kib = str(MAX_MEMORY_BYTES // 1024)
+        command = ["/bin/sh", "-c", 'ulimit -v "$0" && exec "$@"', limit_kib, *command]
+    return command
+
+
+def _run(command: list[str]) -> bool:
     try:
         result = subprocess.run(
             command,
@@ -109,21 +181,25 @@ def _run_ffmpeg(
             timeout=DECODE_TIMEOUT_SECONDS,
             check=False,
         )
-    except FileNotFoundError as exc:
-        raise AudioProcessingUnavailableError(f"ffmpeg not found at {ffmpeg_path!r}.") from exc
     except subprocess.TimeoutExpired:
         logger.warning("ffmpeg took over %s seconds; rejecting the upload.", DECODE_TIMEOUT_SECONDS)
         return False
+    except OSError as exc:
+        # Not executable, a directory, out of process handles, ...
+        raise AudioProcessingUnavailableError(f"Could not start ffmpeg: {exc}") from exc
     if result.returncode != 0:
         logger.info("ffmpeg rejected an upload: %s", result.stderr[-500:].decode(errors="replace"))
         return False
-    return target.exists()
+    return True
 
 
 def _read_decoded(output: bytes) -> DecodedAudio | None:
-    with wave.open(io.BytesIO(output), "rb") as audio:
-        frames = audio.getnframes()
-        rate = audio.getframerate()
+    try:
+        with wave.open(io.BytesIO(output), "rb") as audio:
+            frames = audio.getnframes()
+            rate = audio.getframerate()
+    except (wave.Error, EOFError):
+        return None
     if frames == 0:
         return None
     return DecodedAudio(output, EXTENSION, CONTENT_TYPE, frames / rate)

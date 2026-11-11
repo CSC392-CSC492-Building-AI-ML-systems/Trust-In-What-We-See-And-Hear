@@ -15,6 +15,7 @@ from app.core.body_limit import BodySizeLimitMiddleware
 from app.core.config import Settings, get_settings
 from app.core.errors import request_validation_error_handler
 from app.integrations.supabase import SupabaseUnavailableError
+from app.modules.voices.audio import AudioDecoder
 
 
 @asynccontextmanager
@@ -35,6 +36,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     application.state.settings = settings
+    application.state.audio_decoder = AudioDecoder()
     application.add_exception_handler(
         RequestValidationError, request_validation_error_handler
     )
