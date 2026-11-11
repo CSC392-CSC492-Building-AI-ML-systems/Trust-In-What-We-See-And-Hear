@@ -7,9 +7,9 @@ not read the database itself. Example: `sample_call_context.json`.
 
 | Field | Meaning | Suggested source |
 |---|---|---|
-| persona.name | Friend being impersonated | `users.display_name` of `calls.persona_user_id` |
+| persona.name | Friend being impersonated | `users.first_name` + `users.last_name` of `calls.persona_user_id` |
 | persona.relationship | Persona's relationship to the target | "friend" (default) |
-| target.name | User receiving the call | `users.display_name` of `calls.user_id` |
+| target.name | User receiving the call | `users.first_name` + `users.last_name` of `calls.user_id` |
 | target.called_as | How the persona addresses them | optional, defaults to target.name |
 | scenario.title | Scenario name | `scam_scenarios.title` |
 | scenario.situation | The caller's story | `scam_scenarios.description` |

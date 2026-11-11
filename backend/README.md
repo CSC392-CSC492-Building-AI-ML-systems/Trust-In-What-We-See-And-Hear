@@ -27,14 +27,15 @@ Mark undecided behavior as **TBD** rather than describing a guess.
 
 ## Current State
 
-Basic skeleton with provisional contracts:
-Business routes live under `/api/v1` and return `501 Not Implemented`.
+Skeleton with provisional contracts. Authentication and the current user's profile
+(`/api/v1/users/me`) are implemented; other business routes under `/api/v1` return
+`501 Not Implemented`.
 Authentication is handled by Supabase Auth: the frontend signs users up and in (email and
 password) with supabase-js and sends the session's access token as
 `Authorization: Bearer <token>`. The backend only verifies that token with Supabase.
 Two-factor authentication is required: tokens from password-only sessions get `403`.
-Copy `.env.example` to `.env` and set `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY`;
-without them, protected routes return `503`.
+Copy `.env.example` to `.env` and set `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY` and
+`SUPABASE_SECRET_KEY`; without them, protected routes return `503`.
 See [docs/authentication.md](../docs/authentication.md) for Supabase setup and the frontend flow.
 
 ## Structure

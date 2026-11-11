@@ -3,9 +3,9 @@
 API_DESCRIPTION = """
 Backend API for Trust In What We See And Hear.
 
-**Status:** skeleton. Bearer token verification is implemented with Supabase
-Auth. Once authenticated, every `/api/v1` operation currently returns
-`501 Not Implemented`.
+**Status:** in progress. Authentication (Supabase Auth, two-factor required) and
+the current user's profile (`/api/v1/users/me`) are implemented. Every other
+`/api/v1` operation currently returns `501 Not Implemented` once authenticated.
 
 ## Conventions
 

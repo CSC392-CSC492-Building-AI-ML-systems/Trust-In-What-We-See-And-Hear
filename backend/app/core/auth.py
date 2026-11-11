@@ -2,12 +2,12 @@
    Code Generated with the help of ClaudeCode.
 """
 
-from typing import Annotated
+from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import Depends, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.core.errors import auth_service_unavailable, mfa_required, unauthorized
 from app.integrations.supabase import (
@@ -31,6 +31,8 @@ bearer_scheme = HTTPBearer(
 
 class AuthenticatedUser(BaseModel):
     user_id: UUID
+    # Supabase `user_metadata`. The user can change it, so validate before use.
+    user_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 async def get_current_user(
@@ -49,7 +51,7 @@ async def get_current_user(
     if credentials is None:
         unauthorized("Missing bearer token.")
     try:
-        user_id = await supabase.get_user_id(credentials.credentials)
+        supabase_user = await supabase.get_user(credentials.credentials)
     except SupabaseAuthError:
         unauthorized()
     except SupabaseUnavailableError:
@@ -57,4 +59,6 @@ async def get_current_user(
     # Read only after Supabase has accepted the token (see assurance_level).
     if assurance_level(credentials.credentials) != "aal2":
         mfa_required()
-    return AuthenticatedUser(user_id=user_id)
+    return AuthenticatedUser(
+        user_id=supabase_user.id, user_metadata=supabase_user.user_metadata
+    )

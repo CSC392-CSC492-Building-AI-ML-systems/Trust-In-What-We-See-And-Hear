@@ -46,7 +46,7 @@ In **Project Settings → API Keys** (and **Data API** for the URL), copy:
 |---|---|---|
 | Project URL (`https://<project-ref>.supabase.co`) | Frontend and backend | `NEXT_PUBLIC_SUPABASE_URL`, `SUPABASE_URL` |
 | Publishable key (`sb_publishable_…`, or the legacy `anon` key) | Frontend and backend | `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_PUBLISHABLE_KEY` |
-| Secret key (`sb_secret_…`, or the legacy `service_role` key) | Backend only, once it writes to the database | Not used yet. **Never** put it in the frontend or commit it. |
+| Secret key (`sb_secret_…`, or the legacy `service_role` key) | Backend only, to read and write the database | `SUPABASE_SECRET_KEY`. It bypasses Row Level Security: **never** put it in the frontend or commit it. |
 
 The publishable key is safe in the browser. Row Level Security protects the data.
 
@@ -106,7 +106,11 @@ these tables, but profile, friends and calls do not.
 ```dotenv
 SUPABASE_URL=https://<project-ref>.supabase.co
 SUPABASE_PUBLISHABLE_KEY=sb_publishable_...
+SUPABASE_SECRET_KEY=sb_secret_...
+PRIVACY_POLICY_VERSION=2026-11
 ```
+
+No quotes are needed around these values.
 
 `frontend/tiwwsah_webapp/.env.local`:
 
@@ -279,7 +283,7 @@ const { data, error } = await supabase.auth.signUp({
   email,
   password,
   options: {
-    data: { full_name: name }, // only used to pre-fill the onboarding form
+    data: { first_name: firstName, last_name: lastName }, // copied into the profile at onboarding
   },
 });
 
@@ -302,7 +306,8 @@ With email confirmation on, Supabase does **not** return an error for an email t
 registered, so other people cannot find out which emails have accounts. Always show the
 "check your email" message.
 
-Check that `password` and `confirmPassword` match before calling `signUp`.
+Check that `password` and `confirmPassword` match before calling `signUp`. Trim both names and
+require 1–50 characters each: onboarding fails with `422 invalid_names` otherwise.
 
 **Terms checkbox**: move it to the onboarding form. The backend records privacy policy acceptance
 when it creates the user's profile row during onboarding (section 2.7).
@@ -424,29 +429,59 @@ export async function getCurrentUser() {
 ```
 
 The `(app)` layout already redirects to `/` when this returns `null`. A `503` throws here, which
-shows the error page without signing the user out. The response shape follows the backend's
-`UserProfileResponse` (see `/docs` on the backend), not `first_name`/`last_name`. Its profile fields
-are still **TBD**; once `display_name` is included, show it in the sidebar.
+shows the error page without signing the user out. The profile looks like this (it replaces the
+current profile type; show `first_name` and `last_name` in the sidebar):
 
-`GET /users/me` still returns `501` until the backend implements it. Until then, the layout can read
-the signed-in user straight from Supabase:
-
-```ts
-const supabase = await createClient(); // lib/supabase/server
-const { data } = await supabase.auth.getUser();
-// data.user?.email, data.user?.user_metadata.full_name (set at sign-up)
+```json
+{
+  "user_id": "6f1c…",
+  "username": "alex_morgan",
+  "first_name": "Alex",
+  "last_name": "Morgan",
+  "preferred_language": "en",
+  "verified": false,
+  "onboarding_answers": { "age_range": "25-34", "interests": ["technology"] },
+  "created_at": "2026-11-07T12:00:00Z"
+}
 ```
 
+The email is not part of the profile. If a page needs it, read it from Supabase:
+`(await supabase.auth.getUser()).data.user?.email`.
+
 **Onboarding form**: submit to `POST /api/v1/users/me/onboarding` through a server action using
-`apiFetch`, then redirect to `/dashboard` (or `/verify-identity`). The form needs to collect what the
-`users` row requires:
+`apiFetch`, then redirect to `/dashboard` (or `/verify-identity`):
 
-- `username` (how friends find each other)
-- `display_name` (pre-fill from `user_metadata.full_name`)
-- privacy policy acceptance (checkbox)
-- the onboarding answers (age range, interests, …)
+```json
+{
+  "username": "alex_morgan",
+  "accept_privacy_policy": true,
+  "answers": { "age_range": "25-34", "interests": ["technology", "travel"] }
+}
+```
 
-The exact request body is **TBD** with the backend team; check `/docs` once the endpoint is built.
+- `username`: 3–30 lowercase letters, numbers or underscores. Lowercase what the user types.
+- The first and last name are **not** sent. The backend takes them from the user's Supabase
+  metadata (`user_metadata.first_name` and `user_metadata.last_name`, set at sign-up), removes
+  surrounding spaces and requires 1–50 characters each.
+- `accept_privacy_policy`: must be `true`; this is the terms checkbox.
+- `answers`: stored as sent, at most 10,000 bytes as JSON. The question set is still **TBD**.
+
+Responses:
+
+- `201` with the new profile.
+- `409` with `detail.code === "username_taken"`: ask for another username.
+- `409` with `detail.code === "profile_exists"`: onboarding is already done; go to `/dashboard`.
+- `422` with `detail.code === "invalid_names"`: the metadata has no valid first and last name.
+  Ask for them, save them with
+  `supabase.auth.updateUser({ data: { first_name, last_name } })`, then submit again.
+- Any other `422`: a field is invalid; `detail` says which.
+
+**Profile settings**: `PATCH /api/v1/users/me` changes only the fields that are sent (`username`,
+`first_name`, `last_name`, `preferred_language`, `onboarding_answers`). Send `"onboarding_answers": null` to
+remove the stored answers; the other fields cannot be `null`. `preferred_language` is a language
+tag of at most 35 characters (`en`, `fr-CA`). A taken username gets `409 username_taken`.
+After onboarding the profile is the source of truth for names: changing them here does not
+update `user_metadata`, and later metadata changes do not reach the profile.
 
 ### 2.8 Sign out (`components/sidebar.tsx`)
 
@@ -567,7 +602,7 @@ their next sign-in, the proxy sends them to `/mfa/setup`.
 - [ ] `app/auth/confirm/route.ts`
 - [ ] `/reset-password` page
 - [ ] `lib/api.ts`; `getCurrentUser` calls the backend and handles `401`, `403 mfa_required` and `404`
-- [ ] Onboarding collects username, display name and privacy policy acceptance (terms checkbox moved there)
+- [ ] Onboarding collects username, first and last name and privacy policy acceptance (terms checkbox moved there)
 - [ ] Sign out in the sidebar
 - [ ] Two-factor redirects in `proxy.ts` (`/mfa` or `/mfa/setup`, with `next`)
 - [ ] `/mfa/setup` (QR code, confirm code, removes unfinished setups)
@@ -591,9 +626,11 @@ their next sign-in, the proxy sends them to `/mfa/setup`.
   This says nothing about the token, so **do not sign the user out**; show an error and let them
   retry.
 - The user is always taken from the token. Never send a user ID to act as.
-- `GET /api/v1/users/me` returns `404` for a signed-in user without a profile *(planned)*.
-- `POST /api/v1/users/me/onboarding` creates the profile and returns it with `201` *(planned; body
-  TBD)*.
+- `GET /api/v1/users/me` returns the profile, or `404` for a signed-in user without one (onboarding
+  not finished).
+- `POST /api/v1/users/me/onboarding` creates the profile and returns it with `201`; `409` if the
+  username is taken or onboarding is already done (section 2.7).
+- `PATCH /api/v1/users/me` updates only the fields sent and returns the profile.
 
 Full API reference: `http://localhost:8000/docs` while the backend is running.
 
@@ -616,7 +653,8 @@ Full API reference: `http://localhost:8000/docs` while the backend is running.
    curl -i http://localhost:8000/api/v1/users/me -H "Authorization: Bearer <token>"
    ```
 
-   - `501`: the token was accepted (expected until the endpoint is built).
+   - `404`: the token was accepted; the user has not finished onboarding yet.
+   - `200`: the token was accepted; the response is the user's profile.
    - `403` `mfa_required`: the token is valid but password-only (`aal1`). A token from signing in
      with curl (`/auth/v1/token?grant_type=password`) always gets this, which is a quick way to
      check that two-factor authentication is enforced.
