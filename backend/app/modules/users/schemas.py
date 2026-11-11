@@ -86,10 +86,17 @@ class UserProfileResponse(BaseModel):
     created_at: datetime = Field(description="When the profile was created (onboarding finished).")
 
 
-class OnboardingRequest(RequestModel):
-    username: Username
+class SignUpNames(BaseModel):
+    """The names saved in Supabase `user_metadata` at sign-up. Other keys are ignored."""
+
     first_name: FirstName
     last_name: LastName
+
+
+class OnboardingRequest(RequestModel):
+    """The first and last name come from the user's Supabase metadata, not this body."""
+
+    username: Username
     accept_privacy_policy: Literal[True] = Field(
         description="Must be `true`: the user accepts the current privacy policy."
     )
@@ -115,6 +122,15 @@ class UpdateProfileRequest(RequestModel):
             if name in self.model_fields_set and getattr(self, name) is None:
                 raise ValueError(f"{name} cannot be null.")
         return self
+
+
+class InvalidNamesDetail(BaseModel):
+    code: Literal["invalid_names"] = "invalid_names"
+    message: str
+
+
+class InvalidNamesResponse(BaseModel):
+    detail: InvalidNamesDetail
 
 
 class ConflictDetail(BaseModel):

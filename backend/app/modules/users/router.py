@@ -15,7 +15,10 @@ from app.integrations.supabase import (
 from app.modules.users.schemas import (
     ConflictDetail,
     ConflictResponse,
+    InvalidNamesDetail,
+    InvalidNamesResponse,
     OnboardingRequest,
+    SignUpNames,
     UpdateProfileRequest,
     UserProfileResponse,
 )
@@ -44,6 +47,15 @@ ONBOARDING_CONFLICT_RESPONSES: Responses = {
         "description": (
             "The user has already finished onboarding (`profile_exists`), or the "
             "username is taken (`username_taken`)."
+        ),
+    }
+}
+INVALID_NAMES_RESPONSES: Responses = {
+    status.HTTP_422_UNPROCESSABLE_CONTENT: {
+        "model": InvalidNamesResponse,
+        "description": (
+            "The request body is invalid, or (`detail.code = \"invalid_names\"`) the "
+            "user's Supabase metadata has no valid `first_name` and `last_name`."
         ),
     }
 }
@@ -105,21 +117,26 @@ async def edit_user_info(
     "/onboarding",
     response_model=UserProfileResponse,
     status_code=status.HTTP_201_CREATED,
-    responses=ONBOARDING_CONFLICT_RESPONSES,
+    responses=ONBOARDING_CONFLICT_RESPONSES | INVALID_NAMES_RESPONSES,
 )
 async def finish_onboarding(
     payload: OnboardingRequest, request: Request, user: CurrentUser, supabase_db: SupabaseDb
 ) -> UserProfileResponse:
     """Create the current user's profile from their onboarding answers and return it.
 
-    Records that the user accepted the current privacy policy. Can only be done
-    once per user.
+    The first and last name are taken from the user's Supabase metadata, set at
+    sign-up. Records that the user accepted the current privacy policy. Can only
+    be done once per user.
     """
+    try:
+        names = SignUpNames.model_validate(user.user_metadata)
+    except ValidationError:
+        _invalid_names()
     row = {
         "id": str(user.user_id),
         "username": payload.username,
-        "first_name": payload.first_name,
-        "last_name": payload.last_name,
+        "first_name": names.first_name,
+        "last_name": names.last_name,
         "onboarding_answers": payload.answers,
         "privacy_policy_version": request.app.state.settings.privacy_policy_version,
         "privacy_policy_accepted_at": datetime.now(UTC).isoformat(),
@@ -152,6 +169,18 @@ def _to_profile(row: dict[str, Any]) -> UserProfileResponse:
     except (KeyError, ValidationError):
         # A row missing columns or holding invalid values is a malformed response.
         database_unavailable()
+
+
+def _invalid_names() -> NoReturn:
+    raise HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        detail=InvalidNamesDetail(
+            message=(
+                "Your account has no valid first and last name. Set `first_name` and "
+                "`last_name` (1–50 characters each) in your Supabase user metadata."
+            )
+        ).model_dump(),
+    )
 
 
 def _profile_not_found() -> NoReturn:

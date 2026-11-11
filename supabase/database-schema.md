@@ -404,7 +404,7 @@ the frontend calls Supabase Auth directly, which writes `auth.users`.
 | Endpoint | Reads | Writes |
 |---|---|---|
 | `POST VerifyUser` | `users` | `users.verified_at` |
-| `POST finishOnboarding` | `users` | `users` (creates the row: `username`, `first_name`, `last_name`, privacy policy acceptance, `onboarding_answers`) |
+| `POST finishOnboarding` | `users` | `users` (creates the row: `username`, `first_name`/`last_name` copied from Supabase `user_metadata`, privacy policy acceptance, `onboarding_answers`) |
 | `GET getUserInfo` | `users`, `voices` | – |
 | `PUT editUserInfo` | `users` | `users` (not `verified_at`) |
 | `POST sendFriendRequest` | `users`, `friendships` | `friendships` |

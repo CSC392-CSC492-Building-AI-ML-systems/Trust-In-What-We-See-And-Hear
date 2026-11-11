@@ -29,8 +29,6 @@ PROFILE = {
 }
 ONBOARDING = {
     "username": "alex_morgan",
-    "first_name": "Alex",
-    "last_name": "Morgan",
     "accept_privacy_policy": True,
     "answers": {"age_range": "25-34"},
 }
@@ -119,6 +117,9 @@ def test_onboarding_creates_profile(users_client, supabase_db):
     # The user ID comes from the token, never from the request body.
     assert row["id"] == str(USER_ID)
     assert row["username"] == "alex_morgan"
+    # The names come from the user's Supabase metadata, set at sign-up.
+    assert row["first_name"] == "Alex"
+    assert row["last_name"] == "Morgan"
     assert row["onboarding_answers"] == {"age_range": "25-34"}
     assert row["privacy_policy_version"] == "2026-11"
     assert row["privacy_policy_accepted_at"]
@@ -142,9 +143,7 @@ def test_onboarding_conflicts(users_client, supabase_db, constraint, code):
         {"username": "Alex"},  # uppercase
         {"username": "ab"},  # too short
         {"username": "alex morgan"},
-        {"first_name": "   "},
-        {"last_name": ""},
-        {"last_name": "x" * 51},
+        {"first_name": "Alex"},  # names come from the metadata, not the body
         {"user_id": str(UUID(int=2))},  # unknown fields are rejected
         {"answers": {"bio": "x" * 10_000}},  # too large
     ],
@@ -155,6 +154,43 @@ def test_onboarding_rejects_invalid_requests(users_client, supabase_db, changes)
     )
     assert response.status_code == 422
     assert supabase_db.requests == []
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {},
+        {"first_name": "Alex"},
+        {"last_name": "Morgan"},
+        {"first_name": "   ", "last_name": "Morgan"},
+        {"first_name": "Alex", "last_name": "x" * 51},
+        {"first_name": 1, "last_name": "Morgan"},
+        {"full_name": "Alex Morgan"},
+    ],
+)
+def test_onboarding_without_valid_names_is_422(
+    users_client, supabase_db, test_user, metadata
+):
+    test_user.user_metadata = metadata
+    response = users_client.post("/api/v1/users/me/onboarding", json=ONBOARDING)
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "invalid_names"
+    assert supabase_db.requests == []
+
+
+def test_onboarding_trims_names_and_ignores_other_metadata(
+    users_client, supabase_db, test_user
+):
+    test_user.user_metadata = {
+        "first_name": "  Alex ",
+        "last_name": " Morgan",
+        "full_name": "Someone Else",
+    }
+    supabase_db.handler = lambda request: httpx.Response(201, json=[PROFILE_ROW])
+    response = users_client.post("/api/v1/users/me/onboarding", json=ONBOARDING)
+    assert response.status_code == 201
+    row = json.loads(supabase_db.requests[0].content)
+    assert (row["first_name"], row["last_name"]) == ("Alex", "Morgan")
 
 
 def test_onboarding_requires_privacy_policy(users_client, supabase_db):

@@ -283,7 +283,7 @@ const { data, error } = await supabase.auth.signUp({
   email,
   password,
   options: {
-    data: { first_name: firstName, last_name: lastName }, // only used to pre-fill onboarding
+    data: { first_name: firstName, last_name: lastName }, // copied into the profile at onboarding
   },
 });
 
@@ -306,7 +306,8 @@ With email confirmation on, Supabase does **not** return an error for an email t
 registered, so other people cannot find out which emails have accounts. Always show the
 "check your email" message.
 
-Check that `password` and `confirmPassword` match before calling `signUp`.
+Check that `password` and `confirmPassword` match before calling `signUp`. Trim both names and
+require 1–50 characters each: onboarding fails with `422 invalid_names` otherwise.
 
 **Terms checkbox**: move it to the onboarding form. The backend records privacy policy acceptance
 when it creates the user's profile row during onboarding (section 2.7).
@@ -453,16 +454,15 @@ The email is not part of the profile. If a page needs it, read it from Supabase:
 ```json
 {
   "username": "alex_morgan",
-  "first_name": "Alex",
-  "last_name": "Morgan",
   "accept_privacy_policy": true,
   "answers": { "age_range": "25-34", "interests": ["technology", "travel"] }
 }
 ```
 
 - `username`: 3–30 lowercase letters, numbers or underscores. Lowercase what the user types.
-- `first_name`, `last_name`: 1–50 characters each, surrounding spaces removed. Pre-fill from
-  `user_metadata.first_name` and `user_metadata.last_name` (set at sign-up).
+- The first and last name are **not** sent. The backend takes them from the user's Supabase
+  metadata (`user_metadata.first_name` and `user_metadata.last_name`, set at sign-up), removes
+  surrounding spaces and requires 1–50 characters each.
 - `accept_privacy_policy`: must be `true`; this is the terms checkbox.
 - `answers`: stored as sent, at most 10,000 bytes as JSON. The question set is still **TBD**.
 
@@ -471,12 +471,17 @@ Responses:
 - `201` with the new profile.
 - `409` with `detail.code === "username_taken"`: ask for another username.
 - `409` with `detail.code === "profile_exists"`: onboarding is already done; go to `/dashboard`.
-- `422`: a field is invalid; `detail` says which.
+- `422` with `detail.code === "invalid_names"`: the metadata has no valid first and last name.
+  Ask for them, save them with
+  `supabase.auth.updateUser({ data: { first_name, last_name } })`, then submit again.
+- Any other `422`: a field is invalid; `detail` says which.
 
 **Profile settings**: `PATCH /api/v1/users/me` changes only the fields that are sent (`username`,
 `first_name`, `last_name`, `preferred_language`, `onboarding_answers`). Send `"onboarding_answers": null` to
 remove the stored answers; the other fields cannot be `null`. `preferred_language` is a language
 tag of at most 35 characters (`en`, `fr-CA`). A taken username gets `409 username_taken`.
+After onboarding the profile is the source of truth for names: changing them here does not
+update `user_metadata`, and later metadata changes do not reach the profile.
 
 ### 2.8 Sign out (`components/sidebar.tsx`)
 

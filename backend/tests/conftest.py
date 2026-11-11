@@ -18,7 +18,7 @@ PROTECTED_URL = "/_test/protected"
 
 def add_protected_test_route(application: FastAPI) -> None:
     async def protected(user: Annotated[AuthenticatedUser, Depends(get_current_user)]):
-        return {"user_id": str(user.user_id)}
+        return {"user_id": str(user.user_id), "user_metadata": user.user_metadata}
 
     application.add_api_route(PROTECTED_URL, protected, methods=["GET"])
 
@@ -46,7 +46,9 @@ def client(application):
 
 @pytest.fixture
 def test_user():
-    return AuthenticatedUser(user_id=UUID(int=1))
+    return AuthenticatedUser(
+        user_id=UUID(int=1), user_metadata={"first_name": "Alex", "last_name": "Morgan"}
+    )
 
 
 @pytest.fixture

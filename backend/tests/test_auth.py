@@ -96,14 +96,32 @@ def test_protected_route_accepts_valid_token(supabase_client, supabase):
     def handler(request):
         assert request.url.path == "/auth/v1/user"
         assert request.headers["Authorization"] == f"Bearer {AAL2_TOKEN}"
-        return httpx.Response(200, json={"id": str(USER_ID)})
+        return httpx.Response(
+            200, json={"id": str(USER_ID), "user_metadata": {"first_name": "Alex"}}
+        )
 
     supabase.handler = handler
     response = supabase_client.get(
         PROTECTED_URL, headers={"Authorization": f"Bearer {AAL2_TOKEN}"}
     )
     assert response.status_code == 200
-    assert response.json() == {"user_id": str(USER_ID)}
+    assert response.json() == {
+        "user_id": str(USER_ID),
+        "user_metadata": {"first_name": "Alex"},
+    }
+
+
+@pytest.mark.parametrize("metadata", [None, "not an object", ["a"]])
+def test_missing_or_invalid_metadata_becomes_empty(supabase_client, supabase, metadata):
+    body = {"id": str(USER_ID)}
+    if metadata is not None:
+        body["user_metadata"] = metadata
+    supabase.handler = lambda request: httpx.Response(200, json=body)
+    response = supabase_client.get(
+        PROTECTED_URL, headers={"Authorization": f"Bearer {AAL2_TOKEN}"}
+    )
+    assert response.status_code == 200
+    assert response.json()["user_metadata"] == {}
 
 
 def test_protected_route_when_supabase_is_down(supabase_client, supabase):

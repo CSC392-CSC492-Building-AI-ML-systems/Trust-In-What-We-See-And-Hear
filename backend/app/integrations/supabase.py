@@ -4,6 +4,7 @@
 
 import base64
 import json
+from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
@@ -46,6 +47,14 @@ class SupabaseDatabaseError(Exception):
     """The database rejected a request for a reason that indicates a bug."""
 
 
+@dataclass(frozen=True)
+class SupabaseUser:
+    id: UUID
+    # Set by the client at sign-up (`options.data`) and editable by the user, so
+    # treat it as unverified input.
+    user_metadata: dict[str, Any]
+
+
 class SupabaseAuth:
     """Minimal client for the Supabase Auth REST API.
 
@@ -58,8 +67,8 @@ class SupabaseAuth:
         self._publishable_key = publishable_key
         self._client = client
 
-    async def get_user_id(self, access_token: str) -> UUID:
-        """Validate an access token with Supabase and return its subject."""
+    async def get_user(self, access_token: str) -> SupabaseUser:
+        """Validate an access token with Supabase and return the user it belongs to."""
         body = await self._request("GET", "/user", access_token=access_token)
         user_id = body.get("id")
         # Checked explicitly: UUID() raises different errors for a missing id,
@@ -67,11 +76,15 @@ class SupabaseAuth:
         if not isinstance(user_id, str):
             raise SupabaseUnavailableError("Supabase Auth returned a user without an id.")
         try:
-            return UUID(user_id)
+            parsed_id = UUID(user_id)
         except ValueError as exc:
             raise SupabaseUnavailableError(
                 "Supabase Auth returned an invalid user id."
             ) from exc
+        metadata = body.get("user_metadata")
+        return SupabaseUser(
+            id=parsed_id, user_metadata=metadata if isinstance(metadata, dict) else {}
+        )
 
     async def _request(
         self,
@@ -126,7 +139,7 @@ def assurance_level(access_token: str) -> str | None:
     """Return the token's `aal` claim: "aal1" (password only) or "aal2" (with 2FA).
 
     The signature is not checked here, so only call this after Supabase has
-    accepted the same token (e.g. with `SupabaseAuth.get_user_id`).
+    accepted the same token (e.g. with `SupabaseAuth.get_user`).
     Returns None if the claim cannot be read.
     """
     try:
