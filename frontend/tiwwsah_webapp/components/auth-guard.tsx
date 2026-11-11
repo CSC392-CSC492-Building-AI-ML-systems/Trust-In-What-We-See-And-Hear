@@ -2,14 +2,18 @@
 
 import { createClient } from "@/lib/supabase/client";
 import { getValidAccessToken } from "@/lib/supabase/auth-session";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useEffect } from "react";
 
+const publicPaths = new Set(["/"]);
+
 export function AuthGuard() {
+  const pathname = usePathname();
   const router = useRouter();
-  
 
   useEffect(() => {
+    if (publicPaths.has(pathname)) return;
+
     const supabase = createClient();
 
     async function checkSession() {
@@ -26,7 +30,7 @@ export function AuthGuard() {
     );
 
     return () => subscription.unsubscribe();
-  }, [router]);
+  }, [pathname, router]);
 
   return null;
 }

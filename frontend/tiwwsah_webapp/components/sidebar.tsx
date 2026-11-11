@@ -70,12 +70,6 @@ export function Sidebar() {
 
   return (
     <>
-      <button className="mobile-menu" type="button" onClick={() => setOpen(true)} aria-label="Open navigation">
-        <Menu aria-hidden="true" />
-      </button>
-
-      {open && <button className="sidebar-backdrop" type="button" onClick={() => setOpen(false)} aria-label="Close navigation" />}
-
       <aside className={`sidebar ${open ? "sidebar-open" : ""}`}>
         <div className="brand-row">
           <Link className="brand" href="/dashboard" onClick={() => setOpen(false)} aria-label="SafeCall dashboard">
