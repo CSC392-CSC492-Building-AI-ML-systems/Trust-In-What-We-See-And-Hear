@@ -1,3 +1,8 @@
+"""Tests for the Supabase database client's query helpers.
+
+AI-assisted code (written with Claude Code), cited per the CSC398 AI policy.
+"""
+
 import asyncio
 
 import httpx

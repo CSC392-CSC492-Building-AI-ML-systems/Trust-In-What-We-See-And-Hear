@@ -1,4 +1,7 @@
-"""Friendship queries shared with other modules (consents, and later calls)."""
+"""Friendship queries shared with other modules (consents, and later calls).
+
+AI-assisted code (written with Claude Code), cited per the CSC398 AI policy.
+"""
 
 from typing import Any
 from uuid import UUID

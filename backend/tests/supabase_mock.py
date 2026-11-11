@@ -2,6 +2,8 @@
 
 Registered as a plugin in conftest.py, so the `db` and `db_client` fixtures are available
 to every test module.
+
+AI-assisted code (written with Claude Code), cited per the CSC398 AI policy.
 """
 
 import json

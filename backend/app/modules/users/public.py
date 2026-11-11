@@ -2,6 +2,8 @@
 
 Friends and consents show the other user through these fields only. Never add
 onboarding answers or anything else private here.
+
+AI-assisted code (written with Claude Code), cited per the CSC398 AI policy.
 """
 
 from typing import Any

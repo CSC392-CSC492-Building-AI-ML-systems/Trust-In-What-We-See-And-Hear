@@ -1,3 +1,8 @@
+"""Tests for the scenario endpoints.
+
+AI-assisted code (written with Claude Code), cited per the CSC398 AI policy.
+"""
+
 from uuid import UUID
 
 import pytest

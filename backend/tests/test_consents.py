@@ -1,3 +1,8 @@
+"""Tests for the consent endpoints and use_consent.
+
+AI-assisted code (written with Claude Code), cited per the CSC398 AI policy.
+"""
+
 import asyncio
 from datetime import UTC, datetime
 from uuid import UUID

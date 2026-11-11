@@ -7,6 +7,8 @@
 -- its own status, so a call already starting cannot still match it.
 -- A consent is usable when:
 --   status = 'accepted' and used_at is null and expires_at > now()
+--
+-- AI-assisted code (written with Claude Code), cited per the CSC398 AI policy.
 
 alter type public.consent_status add value 'revoked';
 

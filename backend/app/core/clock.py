@@ -1,4 +1,7 @@
-"""The current time, in one place so tests can fix it."""
+"""The current time, in one place so tests can fix it.
+
+AI-assisted code (written with Claude Code), cited per the CSC398 AI policy.
+"""
 
 from datetime import UTC, datetime
 

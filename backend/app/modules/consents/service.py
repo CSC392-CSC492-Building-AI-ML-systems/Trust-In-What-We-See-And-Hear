@@ -15,6 +15,8 @@ friends, and a later friendship never revives it.
 
 Time conditions in queries use the database's clock (`now`), so a request
 that arrives late cannot use a consent that expired in the meantime.
+
+AI-assisted code (written with Claude Code), cited per the CSC398 AI policy.
 """
 
 from datetime import datetime
