@@ -3,9 +3,10 @@
 API_DESCRIPTION = """
 Backend API for Trust In What We See And Hear.
 
-**Status:** in progress. Authentication (Supabase Auth) and
-the current user's profile (`/api/v1/users/me`) are implemented. Every other
-`/api/v1` operation currently returns `501 Not Implemented` once authenticated.
+**Status:** in progress. Authentication (Supabase Auth),
+the current user's profile (`/api/v1/users/me`), friends, consents and scenarios
+are implemented. Every other `/api/v1` operation currently returns
+`501 Not Implemented` once authenticated.
 
 ## Conventions
 
@@ -23,6 +24,8 @@ the current user's profile (`/api/v1/users/me`) are implemented. Every other
 - **Pagination:** list routes accept `limit` (1–100, default 20) and `offset`
   (default 0), and return `{items, limit, offset}`.
 - **Request bodies:** unknown top-level fields in JSON bodies are rejected with `422`.
+- **Errors:** most `4xx` errors return `{"detail": {"code": ..., "message": ...}}`.
+  Each operation lists its `code` values; act on `code`, not on `message`.
 - **Asynchronous work:** `202 Accepted` means the request was accepted but the work
   has not finished.
 
@@ -33,7 +36,7 @@ the current user's profile (`/api/v1/users/me`) are implemented. Every other
 2. Upload a voice sample to train your voice model.
 3. Add friends.
 4. Request consent from a friend to use their profile and voice. Once they
-   accept, the consent can be used for a limited time.
+   accept, the consent can be used for one call, until it expires.
 5. Start a call with that consent and a scenario, then review the result in
    call history.
 """
@@ -58,9 +61,10 @@ OPENAPI_TAGS = [
     {
         "name": "Consents",
         "description": (
-            "Permission from a friend to use their profile and voice in a "
-            "scam call to the requester. Accepted consents expire after a "
-            "short period set by the server."
+            "Permission from a friend to use their profile and voice in one "
+            "scam call to the requester. An accepted consent is used up by the "
+            "call it starts, and expires if it is not used within a period set "
+            "by the server. The friend can revoke it before it is used."
         ),
     },
     {
@@ -74,9 +78,10 @@ OPENAPI_TAGS = [
     {
         "name": "Scenarios",
         "description": (
-            "Scam scenarios that calls are based on.\n\n"
-            "**TBD:** the content format, whether scenarios are shared "
-            "between users, and who can edit or delete them."
+            "Scam scenarios that calls are based on. Users see the active "
+            "built-in scenarios and their own, and can only change their own.\n\n"
+            "**TBD:** the fields the call agent needs (for example the "
+            "scammer's request, and the format of `system_prompt`)."
         ),
     },
 ]

@@ -2,7 +2,7 @@
 
 from functools import lru_cache
 
-from pydantic import SecretStr
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     supabase_secret_key: SecretStr | None = None
     # Recorded on each profile as the privacy policy version the user accepted.
     privacy_policy_version: str = "2026-11"
+    # How long an accepted consent can be used before it expires unused. Each
+    # consent is also single use. Placeholder until the team agrees a period.
+    consent_valid_minutes: int = Field(default=24 * 60, gt=0)
 
 
 @lru_cache
