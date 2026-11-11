@@ -204,16 +204,22 @@ def _run(command: list[str]) -> bool:
     assert process.stderr is not None
     tail: deque[bytes] = deque()
     reader = threading.Thread(target=keep_tail, args=(process.stderr, tail), daemon=True)
-    reader.start()
+    # From here on, whatever happens, ffmpeg is stopped and reaped.
     try:
+        try:
+            reader.start()
+        except RuntimeError as exc:  # no thread available
+            raise AudioProcessingUnavailableError(f"Could not watch ffmpeg: {exc}") from exc
         status = process.wait(timeout=DECODE_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait()
         logger.warning("ffmpeg took over %s seconds; rejecting the upload.", DECODE_TIMEOUT_SECONDS)
         return False
     finally:
-        reader.join(timeout=5)
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        if reader.ident is not None:  # started
+            reader.join(timeout=5)
         process.stderr.close()
     errors = b"".join(tail)[-STDERR_TAIL_BYTES:].decode(errors="replace")
     if status in SETUP_FAILURE_STATUSES and sys.platform.startswith("linux"):

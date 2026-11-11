@@ -291,6 +291,23 @@ def test_ffmpeg_rejection_is_bad_audio(monkeypatch):
     monkeypatch.setattr(sys, "platform", "linux")
     assert audio_module._run([sys.executable, "-c", "raise SystemExit(1)"]) is False
 
+def test_ffmpeg_is_stopped_if_it_cannot_be_watched(monkeypatch):
+    started = []
+    popen = subprocess.Popen
+
+    def record(*args, **kwargs):
+        started.append(popen(*args, **kwargs))
+        return started[-1]
+
+    def no_threads(self):
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(audio_module.subprocess, "Popen", record)
+    monkeypatch.setattr(audio_module.threading.Thread, "start", no_threads)
+    with pytest.raises(AudioProcessingUnavailableError):
+        audio_module._run([sys.executable, "-c", "import time; time.sleep(30)"])
+    assert started[0].poll() is not None
+
 # Crafted Matroska files (from the security review). Each builds an EBML element.
 def ebml(element_id, payload):
     for size_bytes in range(1, 9):
