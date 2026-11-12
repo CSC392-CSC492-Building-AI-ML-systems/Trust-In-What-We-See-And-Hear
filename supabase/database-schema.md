@@ -173,16 +173,18 @@ create index friendships_addressee_id_idx on public.friendships(addressee_id);
 
 One voice per user. Chatterbox is pretrained and clones a voice from a reference recording, so there
 is no per-user training: the user uploads a reference sample of their own voice
-(`PUT /api/v1/users/me/voice`), and uploading again replaces it, deletes the old files and resets
-`status` to `uploaded`. What the voice pipeline derives from the sample, if anything
-(`model_storage_path`), and when it sets `ready`, is TBD. Only the owner's own voice is ever
-uploaded. Friends get access through `scam_consents`, and never receive any file.
+(`PUT /api/v1/users/me/voice`), and uploading again replaces it and deletes the old files. The
+backend checks the recording (15–60 seconds, not silent) and sets `status` to `ready` as soon as it
+is saved, since the voice pipeline reads the sample directly when a call starts. `uploaded` and
+`training` are not used for now, and nothing is derived from the sample, so `model_storage_path`
+stays null. Only the owner's own voice is ever uploaded. Friends get access through
+`scam_consents`, and never receive any file.
 
 ```sql
 create table public.voices (
   id                    uuid primary key default gen_random_uuid(),
   user_id               uuid unique not null references public.users(id) on delete cascade,
-  sample_storage_path   text,                      -- Supabase Storage: voice-samples/{user_id}/{upload_id}.{ext}
+  sample_storage_path   text,                      -- Supabase Storage: voice-samples/{user_id}/{upload_id}.wav
   sample_duration_seconds numeric(6,2),
   model_storage_path    text,                      -- Supabase Storage: voice-models/..., if the pipeline derives a file (TBD)
   status                voice_status not null default 'uploaded',
@@ -388,7 +390,8 @@ through the backend.
 | Bucket | Path | Access |
 |---|---|---|
 | `voice-samples` (private) | `{user_id}/{upload_id}.wav` (mono 16-bit WAV, converted from the upload) | backend only; never sent to a client |
-| `voice-models` (private) | `{user_id}/...` | backend only; never sent to a client |
+| `voice-models` (private) | `{user_id}/...` (unused for now) | backend only; never sent to a client |
+| `call-recordings` (private) | `{user_id}/{call_id}.mp3` | owner only; deleted after retention period |
 
 Draft migration `0004_voice_storage_buckets.sql` creates the two voice buckets. They have no
 `storage.objects` policies, so clients cannot read or write them; the backend uses the secret key.
@@ -397,7 +400,6 @@ points to. After a successful upload, the backend deletes the replaced sample an
 Deleting the voice deletes its files, then the row (so a failed attempt can be retried). Both also
 delete leftovers of failed requests: unreferenced files in the user's folders older than 10
 minutes (a newer one may belong to an upload still saving its record).
-| `call-recordings` (private) | `{user_id}/{call_id}.mp3` | owner only; deleted after retention period |
 
 ---
 
@@ -416,9 +418,8 @@ minutes (a newer one may belong to an upload still saving its record).
 - **Voice samples**: kept until the user replaces or deletes their voice
   (`DELETE /api/v1/users/me/voice`, which deletes the files, then the row, then older leftovers;
   it can be repeated until it succeeds). A file left by a failed request is deleted on the user's
-  next upload or delete. **TBD:** a scheduled sweep for users who never come back. **TBD:** whether
-  the sample can be deleted once the pipeline is `ready`; with zero-shot cloning the pipeline may
-  need it for every call.
+  next upload or delete. **TBD:** a scheduled sweep for users who never come back. The sample is
+  needed for every call, since Chatterbox clones from it each time.
 
 ---
 

@@ -1,5 +1,6 @@
 """Application creation and router registration."""
 
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -14,8 +15,10 @@ from app.api.router import router as api_router
 from app.core.body_limit import BodySizeLimitMiddleware
 from app.core.config import Settings, get_settings
 from app.core.errors import request_validation_error_handler
-from app.integrations.supabase import SupabaseUnavailableError
+from app.integrations.supabase import SupabaseStorageError, SupabaseUnavailableError
 from app.modules.voices.audio import AudioDecoder
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -42,11 +45,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
 
     @application.exception_handler(SupabaseUnavailableError)
-    async def supabase_unavailable(request: Request, exc: SupabaseUnavailableError) -> JSONResponse:
-        # Authentication catches its own outages first, so this is the database.
+    @application.exception_handler(SupabaseStorageError)
+    async def supabase_unavailable(request: Request, exc: Exception) -> JSONResponse:
+        # Authentication catches its own outages first, so this is the database
+        # or Storage. A Storage error (not 429 or 5xx) means missing setup, such
+        # as a bucket that was never created, so it is logged.
+        if isinstance(exc, SupabaseStorageError):
+            logger.error("Supabase Storage refused a request: %s", exc)
         return JSONResponse(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            content={"detail": "The database is unavailable."},
+            content={"detail": "A backend service is unavailable. Try again later."},
         )
 
     # Room for the largest voice sample plus the multipart form around it.

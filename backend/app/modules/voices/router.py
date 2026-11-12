@@ -68,6 +68,7 @@ NOT_FOUND = error_responses(
             ("owner_consent_required", "`owner_consent` was not `true`."),
             ("audio_too_short", "The recording is shorter than the minimum length."),
             ("audio_too_long", "The recording is longer than the maximum length."),
+            ("audio_too_quiet", "The recording is silent or almost silent."),
         ),
         error_responses(
             status.HTTP_409_CONFLICT,
@@ -111,9 +112,10 @@ async def upload_voice_sample(
 ) -> VoiceResponse:
     """Upload the current user's voice reference sample, replacing any previous one.
 
-    The file is decoded and checked before anything is stored, and stored as
-    mono WAV whatever format was uploaded. A replaced sample, and
-    anything derived from it, is deleted, and the voice goes back to `uploaded`.
+    The file is decoded and checked (length and loudness) before anything is
+    stored, and stored as mono WAV whatever format was uploaded. Chatterbox
+    clones from the sample directly, so the voice is `ready` as soon as it is
+    saved. A replaced sample, and anything derived from it, is deleted.
     """
     settings: Settings = request.app.state.settings
     if not owner_consent:
@@ -162,6 +164,12 @@ async def upload_voice_sample(
             "audio_too_long",
             f"The recording must be at most {settings.voice_sample_max_seconds:g} seconds long.",
         )
+    if info.loudness_dbfs < settings.voice_sample_min_dbfs:
+        api_error(
+            status.HTTP_400_BAD_REQUEST,
+            "audio_too_quiet",
+            "The recording is silent or too quiet. Record again closer to the microphone.",
+        )
 
     existing = await _find_voice(supabase_db, user.user_id)
     # A new object name per upload, so a failed upload never overwrites the
@@ -174,7 +182,8 @@ async def upload_voice_sample(
         "sample_storage_path": sample_path,
         "sample_duration_seconds": round(info.duration_seconds, 2),
         "model_storage_path": None,
-        "status": "uploaded",
+        # No training step: a sample that passed the checks can be cloned.
+        "status": "ready",
         "error_message": None,
         "voice_owner_consent_at": clock.to_iso(clock.now()),
     }

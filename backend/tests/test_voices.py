@@ -3,8 +3,11 @@
 AI-assisted code (written with Claude Code), cited per the CSC398 AI policy.
 """
 
+import array
 import io
 import json
+import math
+import os
 import shutil
 import struct
 import subprocess
@@ -43,22 +46,43 @@ SAMPLES = "voice-samples"
 MODELS = "voice-models"
 
 
-def wav(seconds: float, rate: int = 8000) -> bytes:
+def wav(
+    seconds: float,
+    rate: int = 8000,
+    amplitude: float = 0.5,
+    offset: int = 0,
+    silence_before: float = 0,
+) -> bytes:
+    """A 440 Hz tone; amplitude is a fraction of full scale (0 for silence).
+
+    `offset` adds a constant to every sample; `silence_before` seconds of
+    silence come first and count towards `seconds`.
+    """
+    period = [
+        offset + round(amplitude * 32767 * math.sin(2 * math.pi * 440 * n / rate))
+        for n in range(rate)
+    ]
+    frames = int(rate * seconds)
+    silent = int(rate * silence_before)
+    tone = (period * ((frames - silent) // rate + 1))[: frames - silent]
+    samples = array.array("h", [0] * silent + tone)
+    if sys.byteorder == "big":
+        samples.byteswap()
     buffer = io.BytesIO()
     with wave.open(buffer, "wb") as audio:
         audio.setnchannels(1)
         audio.setsampwidth(2)
         audio.setframerate(rate)
-        audio.writeframes(b"\0\0" * int(rate * seconds))
+        audio.writeframes(samples.tobytes())
     return buffer.getvalue()
 
 
 def voice_row(**changes):
     return {
         "id": str(VOICE_ID),
-        "status": "uploaded",
+        "status": "ready",
         "error_message": None,
-        "sample_duration_seconds": 10.0,
+        "sample_duration_seconds": 20.0,
         "voice_owner_consent_at": "2026-11-10T12:00:00+00:00",
         "updated_at": "2026-11-10T12:00:00+00:00",
         "sample_storage_path": f"{ME}/new.wav",
@@ -160,7 +184,7 @@ def voice_client(application, db_client, storage):
 def upload(client, data=None, owner_consent="true", content_type="audio/wav"):
     return client.put(
         "/api/v1/users/me/voice",
-        files={"audio": ("sample.wav", wav(10) if data is None else data, content_type)},
+        files={"audio": ("sample.wav", wav(20) if data is None else data, content_type)},
         data={"owner_consent": owner_consent},
     )
 
@@ -184,6 +208,7 @@ def read_wav(data):
 def test_decode_converts_browser_recordings_to_mono_wav(name):
     decoded = decode((AUDIO / name).read_bytes())
     assert decoded.duration_seconds == pytest.approx(7.0, abs=0.1)
+    assert -30 < decoded.loudness_dbfs < -10
     assert (decoded.extension, decoded.content_type) == ("wav", "audio/wav")
     assert read_wav(decoded.data) == (1, 2, 24000)
 
@@ -192,6 +217,34 @@ def test_decode_converts_wav():
     decoded = decode(wav(7, rate=44100))
     assert decoded.duration_seconds == pytest.approx(7.0)
     assert read_wav(decoded.data) == (1, 2, 24000)
+
+
+@pytest.mark.parametrize(
+    ("amplitude", "expected"),
+    [
+        (0.5, -9.03),  # a sine's RMS is its amplitude / sqrt(2)
+        (0.01, -43.0),
+        (0.001, -63.0),
+        (0, -math.inf),
+    ],
+)
+def test_decode_measures_loudness(amplitude, expected):
+    assert decode(wav(7, amplitude=amplitude)).loudness_dbfs == pytest.approx(expected, abs=0.5)
+
+
+def test_loudness_ignores_a_constant_offset():
+    # A constant signal (DC offset) is inaudible, whatever its value.
+    assert decode(wav(7, amplitude=0, offset=1000)).loudness_dbfs == -math.inf
+    tone = decode(wav(7, amplitude=0.01, offset=1000)).loudness_dbfs
+    assert tone == pytest.approx(-43.0, abs=0.5)
+
+
+def test_loudness_covers_only_the_start_chatterbox_uses():
+    # Chatterbox conditions on at most the first 15 seconds.
+    late = decode(wav(36, silence_before=16))
+    assert late.loudness_dbfs == -math.inf
+    pause = decode(wav(20, silence_before=3))  # a short pause before speaking
+    assert pause.loudness_dbfs > -11
 
 
 def test_decode_measures_the_audio_not_the_header():
@@ -363,12 +416,35 @@ def test_decode_output_is_capped_even_if_timestamps_repeat(monkeypatch):
     assert decoded is None or decoded.duration_seconds <= 61
 
 
-def test_decode_rejects_files_with_many_streams():
-    # Each track's private data is a zlib bomb; 16 of them used 500 MiB.
+def peak_ffmpeg_memory(data, folder):
+    """Peak resident memory, in bytes, of ffmpeg run with the decoder's command."""
+    source, target = folder / "upload", folder / "decoded.wav"
+    source.write_bytes(data)
+    command = audio_module._ffmpeg_command(
+        shutil.which("ffmpeg"), source, target, 24000, 60, 3 * 1024 * 1024
+    )
+    process = subprocess.Popen(
+        command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
+    _, wait_status, usage = os.wait4(process.pid, 0)
+    process.returncode = os.waitstatus_to_exitcode(wait_status)
+    # Linux reports KiB, macOS bytes.
+    return usage.ru_maxrss * (1 if sys.platform == "darwin" else 1024)
+
+
+def test_decode_ignores_streams_beyond_the_limit(tmp_path):
+    # Each track's private data is a zlib bomb: parsing all 16 tracks takes over
+    # 600 MiB. ffmpeg 4.x rejects the file, while 9.x decodes the first two
+    # tracks (0.1 s, so the upload is still rejected as too short). Either way
+    # the other tracks are never parsed, so memory stays low.
     bomb = ebml("63a2", zlib.compress(b"\0" * 6 * 1024 * 1024))
     compressed = ebml("6d80", ebml("6240", ebml_uint("5032", 2) + ebml("5034", ebml_uint("4254", 0))))
     tracks = [pcm_track(n, bomb + compressed) for n in range(1, 17)]
-    assert decode(matroska(tracks, [ebml("a3", b"\x81\x00\x00\x80" + b"\0" * 4800)])) is None
+    data = matroska(tracks, [ebml("a3", b"\x81\x00\x00\x80" + b"\0" * 4800)])
+    decoded = decode(data)
+    assert decoded is None or decoded.duration_seconds < 1
+    if hasattr(os, "wait4"):  # Linux and macOS; Windows cannot measure it this way
+        assert peak_ffmpeg_memory(data, tmp_path) < 300 * 1024 * 1024
 
 
 def run_async(function):
@@ -422,7 +498,7 @@ def test_first_upload(voice_client, db, storage):
 
     assert response.status_code == 200
     data = response.json()
-    assert data["status"] == "uploaded"
+    assert data["status"] == "ready"
     assert "sample_storage_path" not in data and "model_storage_path" not in data
 
     [stored] = storage.uploads
@@ -433,8 +509,9 @@ def test_first_upload(voice_client, db, storage):
     row = body(db.sent("POST", "voices")[0])
     assert row["user_id"] == str(ME)
     assert row["sample_storage_path"] == new_path
-    assert row["sample_duration_seconds"] == pytest.approx(10.0)
-    assert row["status"] == "uploaded"
+    assert row["sample_duration_seconds"] == pytest.approx(20.0)
+    # No training step, so the voice can be used at once.
+    assert row["status"] == "ready"
     assert row["voice_owner_consent_at"] == "2026-11-10T12:00:00.000000Z"
     assert set(storage.objects[SAMPLES]) == {new_path}
 
@@ -446,7 +523,8 @@ def test_format_comes_from_contents_not_the_client(voice_client, db, storage):
     assert storage.uploads[0].headers["Content-Type"] == "audio/wav"
 
 
-def test_browser_recording_is_stored_as_wav(voice_client, db, storage):
+def test_browser_recording_is_stored_as_wav(application, voice_client, db, storage):
+    application.state.settings.voice_sample_min_seconds = 5  # the fixtures are 7 s
     db.on("GET", "voices", rows())
     db.on("POST", "voices", rows(voice_row(), status=201))
     response = upload(voice_client, (AUDIO / "voice.webm").read_bytes(), content_type="audio/webm")
@@ -484,7 +562,7 @@ def test_replacing_a_sample_deletes_older_files(voice_client, db, storage):
     assert request.url.params["sample_storage_path"] == f"eq.{OLD_SAMPLE}"
     assert request.url.params["user_id"] == f"eq.{ME}"
     values = body(request)
-    assert values["status"] == "uploaded"
+    assert values["status"] == "ready"
     assert values["model_storage_path"] is None
     assert values["error_message"] is None
     assert set(storage.objects[SAMPLES]) == {
@@ -559,6 +637,28 @@ def test_unknown_database_outcome_keeps_the_new_file(voice_client, db, storage):
     assert set(storage.objects[SAMPLES]) == {storage.uploaded_path()}
 
 
+BUCKET_NOT_FOUND = httpx.Response(404, json={"message": "Bucket not found"})
+
+
+def test_missing_bucket_on_upload_is_503(voice_client, db, storage, caplog):
+    # For example, migration 0004 was never applied.
+    db.on("GET", "voices", rows())
+    storage.fail_upload = BUCKET_NOT_FOUND
+    response = upload(voice_client)
+    assert response.status_code == 503
+    assert response.json() == {"detail": "A backend service is unavailable. Try again later."}
+    assert db.sent("POST", "voices") == []
+    assert "Bucket not found" in caplog.text
+
+
+def test_missing_bucket_on_delete_is_503(voice_client, db, storage):
+    db.on("GET", "voices", rows())  # no voice yet
+    db.on("GET", "voices", rows())  # still none before the sweep
+    storage.fail_list = BUCKET_NOT_FOUND
+    response = voice_client.delete("/api/v1/users/me/voice")
+    assert response.status_code == 503
+
+
 def test_storage_failure_writes_nothing(voice_client, db, storage):
     db.on("GET", "voices", rows())
     storage.fail_upload = httpx.Response(503)
@@ -580,7 +680,13 @@ def test_cleanup_failure_does_not_fail_the_upload(voice_client, db, storage):
     [
         ({"owner_consent": "false"}, 400, "owner_consent_required"),
         ({"data": wav(2)}, 400, "audio_too_short"),
+        # Chatterbox Turbo needs over 5 s; 15 s covers both Chatterbox variants.
+        ({"data": wav(14.9)}, 400, "audio_too_short"),
         ({"data": wav(61)}, 400, "audio_too_long"),
+        ({"data": wav(20, amplitude=0)}, 400, "audio_too_quiet"),
+        ({"data": wav(20, amplitude=0.001)}, 400, "audio_too_quiet"),  # about -63 dBFS
+        ({"data": wav(20, amplitude=0, offset=1000)}, 400, "audio_too_quiet"),
+        ({"data": wav(36, silence_before=16)}, 400, "audio_too_quiet"),
         ({"data": b"definitely not audio" * 50}, 415, "unsupported_audio"),
         ({"data": wav(10)[:44]}, 415, "unsupported_audio"),
         ({"data": b""}, 415, "unsupported_audio"),
@@ -592,6 +698,13 @@ def test_invalid_uploads_store_nothing(voice_client, db, storage, kwargs, status
     assert response.json()["detail"]["code"] == code
     assert storage.requests == []
     assert db.requests == []
+
+
+@pytest.mark.parametrize(("seconds", "amplitude"), [(15, 0.5), (20, 0.01)])  # 15 s; -43 dBFS
+def test_uploads_at_the_limits_are_accepted(voice_client, db, storage, seconds, amplitude):
+    db.on("GET", "voices", rows())
+    db.on("POST", "voices", rows(voice_row(), status=201))
+    assert upload(voice_client, wav(seconds, amplitude=amplitude)).status_code == 200
 
 
 def test_too_large_upload_is_413(application, voice_client, db, storage):
@@ -620,7 +733,7 @@ def test_get_voice(voice_client, db):
     assert response.json() == {
         "status": "failed",
         "error_message": "Too noisy",
-        "sample_duration_seconds": 10.0,
+        "sample_duration_seconds": 20.0,
         "owner_consent_at": "2026-11-10T12:00:00Z",
         "updated_at": "2026-11-10T12:00:00Z",
     }

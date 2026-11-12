@@ -16,11 +16,11 @@ class VoiceResponse(BaseModel):
 
     status: VoiceStatus = Field(
         description=(
-            "`uploaded`: the sample is stored. `training`: the voice pipeline is "
-            "processing it. `ready`: friends can use it in calls. `failed`: see "
-            "`error_message` and upload a new sample.\n\n"
-            "**TBD:** whether `training` is needed, since Chatterbox clones from "
-            "the reference sample without per-user training."
+            "`ready`: friends can use it in calls. Chatterbox clones from the "
+            "reference sample without per-user training, so an accepted upload is "
+            "`ready` at once. `failed`: see `error_message` and upload a new sample. "
+            "`uploaded` and `training` are reserved for the voice pipeline, in case "
+            "it ever needs to process a sample first; they are not used yet."
         )
     )
     error_message: str | None

@@ -27,14 +27,19 @@ class Settings(BaseSettings):
     # the voice pipeline derives from them. Only the backend can read them.
     voice_samples_bucket: str = "voice-samples"
     voice_models_bucket: str = "voice-models"
-    # Limits for a voice reference sample. Placeholders until the voice
-    # pipeline confirms what Chatterbox needs. The size limit also caps every
-    # request body (see app/core/body_limit.py).
+    # Limits for a voice reference sample. The size limit also caps every
+    # request body (see app/core/body_limit.py). Chatterbox Turbo needs more
+    # than 5 seconds of reference and uses up to the first 15, so 15 covers both
+    # Chatterbox variants.
     voice_sample_max_bytes: int = Field(default=10 * 1024 * 1024, gt=0)
-    voice_sample_min_seconds: float = Field(default=5.0, gt=0)
+    voice_sample_min_seconds: float = Field(default=15.0, gt=0)
     voice_sample_max_seconds: float = Field(default=60.0, gt=0)
-    # Uploads are converted to mono WAV at this rate. Chatterbox resamples its
-    # reference audio itself; 24 kHz matches its output rate. TBD with the pipeline.
+    # A recording quieter than this on average (RMS, dB relative to full scale)
+    # is treated as silent. Speech is usually -30 to -15 dBFS; even a quiet
+    # microphone with pauses stays well above -50.
+    voice_sample_min_dbfs: float = Field(default=-50.0, lt=0)
+    # Uploads are converted to mono WAV at this rate: Chatterbox loads its
+    # reference audio at 24 kHz and resamples it as it needs.
     voice_sample_rate: int = Field(default=24_000, ge=8_000, le=48_000)
     # ffmpeg decodes uploaded audio. A name on PATH or a full path.
     ffmpeg_path: str = "ffmpeg"

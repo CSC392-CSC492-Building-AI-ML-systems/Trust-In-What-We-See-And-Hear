@@ -20,13 +20,17 @@ The upload is untrusted, so ffmpeg runs as a separate process with:
 - a time limit, and at most `MAX_CONCURRENT_DECODES` at once. Uploads wait for
   a free decoder without holding a worker thread.
 
-The client's file name and content type are ignored.
+The client's file name and content type are ignored. The decoded audio's
+length and the average loudness of its start are reported, so the upload can
+reject recordings that are too short, too long or silent.
 
 AI-assisted code (written with Claude Code), cited per the CSC398 AI policy.
 """
 
+import array
 import io
 import logging
+import math
 import shutil
 import subprocess
 import sys
@@ -53,7 +57,10 @@ ALLOWED_DECODERS = (
     "opus,libopus,vorbis,libvorbis,aac,aac_fixed,mp3,mp3float,flac,"
     "pcm_u8,pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le,pcm_f64le"
 )
-MAX_STREAMS = 2  # audio, plus video if the recording has it
+# Audio, plus video if the recording has it. ffmpeg 4.x rejects a file with
+# more streams; recent versions (9.x) ignore the extra streams instead. Either
+# way they are never parsed, which is what bounds memory.
+MAX_STREAMS = 2
 MAX_ALLOCATION_BYTES = 16 * 1024 * 1024
 # Virtual memory, so it includes ffmpeg's shared libraries (about 256 MiB for a
 # typical Linux build). Enforced on Linux only; Windows and macOS are only used
@@ -64,6 +71,10 @@ MAX_CONCURRENT_DECODES = 2
 DECODER_WAIT_SECONDS = 10
 DECODE_TIMEOUT_SECONDS = 20
 OUTPUT_SAMPLE_BYTES = 2  # 16-bit mono
+# Loudness is measured over the start of the recording only: Chatterbox
+# conditions on at most the first 15 seconds, so a voice that only starts
+# later is as good as silent.
+LOUDNESS_WINDOW_SECONDS = 15
 WAV_HEADER_ALLOWANCE = 1024
 # Only the end of ffmpeg's error output is kept: a crafted file can make it
 # print an error for every packet.
@@ -83,6 +94,9 @@ class DecodedAudio:
     extension: str
     content_type: str
     duration_seconds: float
+    # Average (RMS) level of the first LOUDNESS_WINDOW_SECONDS, relative to
+    # full scale; -inf for silence.
+    loudness_dbfs: float
 
 
 class AudioDecoder:
@@ -246,8 +260,28 @@ def _read_decoded(output: bytes) -> DecodedAudio | None:
         with wave.open(io.BytesIO(output), "rb") as audio:
             frames = audio.getnframes()
             rate = audio.getframerate()
+            pcm = audio.readframes(frames)
     except (wave.Error, EOFError):
         return None
     if frames == 0:
         return None
-    return DecodedAudio(output, EXTENSION, CONTENT_TYPE, frames / rate)
+    window = pcm[: int(LOUDNESS_WINDOW_SECONDS * rate) * OUTPUT_SAMPLE_BYTES]
+    return DecodedAudio(output, EXTENSION, CONTENT_TYPE, frames / rate, loudness_dbfs(window))
+
+
+def loudness_dbfs(pcm: bytes) -> float:
+    """RMS level of 16-bit little-endian mono PCM, in dB relative to full scale.
+
+    The mean (DC offset) is removed first: a constant signal is inaudible.
+    """
+    samples = array.array("h", pcm[: len(pcm) // 2 * 2])
+    if sys.byteorder == "big":
+        samples.byteswap()
+    if not samples:
+        return -math.inf
+    count = len(samples)
+    mean = sum(samples) / count
+    variance = math.sumprod(samples, samples) / count - mean * mean
+    if variance <= 0:
+        return -math.inf
+    return 10 * math.log10(variance / 32768**2)
