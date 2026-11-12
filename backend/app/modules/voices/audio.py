@@ -17,8 +17,8 @@ The upload is untrusted, so ffmpeg runs as a separate process with:
   compressed data);
 - output stopped just past the longest allowed length and capped in bytes too,
   since a crafted file can repeat timestamps so that `-t` never triggers;
-- a time limit, and at most `MAX_CONCURRENT_DECODES` at once. Uploads wait for
-  a free decoder without holding a worker thread.
+- a time limit, and at most `MAX_CONCURRENT_DECODES` at once, and one per
+  user. Uploads wait for a free decoder without holding a worker thread.
 
 The client's file name and content type are ignored. The decoded audio's
 length and the average loudness of its start are reported, so the upload can
@@ -38,6 +38,7 @@ import tempfile
 import threading
 import wave
 from collections import deque
+from collections.abc import Hashable
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -88,6 +89,10 @@ class AudioProcessingUnavailableError(Exception):
     """ffmpeg is missing, cannot start or is busy, so the file could not be checked."""
 
 
+class DecodeInProgressError(Exception):
+    """The same owner already has an upload being decoded."""
+
+
 @dataclass(frozen=True)
 class DecodedAudio:
     data: bytes  # mono 16-bit PCM WAV
@@ -102,18 +107,46 @@ class DecodedAudio:
 class AudioDecoder:
     """Runs ffmpeg in worker threads of its own, at most MAX_CONCURRENT_DECODES at once.
 
-    One per application. Its limiters are created on first use, inside the
-    event loop.
+    Each owner (user) has at most one upload waiting or decoding, so one
+    account cannot hold every decoder while other users wait. One per
+    application, and per server process like the decoders themselves. Its
+    limiters are created on first use, inside the event loop.
     """
 
     def __init__(self) -> None:
         self._slots: anyio.CapacityLimiter | None = None
         self._threads: anyio.CapacityLimiter | None = None
+        self._owners: set[Hashable] = set()
 
     async def decode(
+        self,
+        data: bytes,
+        *,
+        owner: Hashable,
+        ffmpeg_path: str,
+        sample_rate: int,
+        max_seconds: float,
+    ) -> DecodedAudio | None:
+        """Decode the upload to mono WAV, or return None if it is not supported audio.
+
+        Raises DecodeInProgressError if `owner` already has an upload waiting
+        or decoding.
+        """
+        # No await between the check and the add, so two uploads from one
+        # owner cannot both get past it.
+        if owner in self._owners:
+            raise DecodeInProgressError("This owner already has an upload being decoded.")
+        self._owners.add(owner)
+        try:
+            return await self._decode(
+                data, ffmpeg_path=ffmpeg_path, sample_rate=sample_rate, max_seconds=max_seconds
+            )
+        finally:
+            self._owners.discard(owner)
+
+    async def _decode(
         self, data: bytes, *, ffmpeg_path: str, sample_rate: int, max_seconds: float
     ) -> DecodedAudio | None:
-        """Decode the upload to mono WAV, or return None if it is not supported audio."""
         if self._slots is None or self._threads is None:
             self._slots = anyio.CapacityLimiter(MAX_CONCURRENT_DECODES)
             self._threads = anyio.CapacityLimiter(MAX_CONCURRENT_DECODES)

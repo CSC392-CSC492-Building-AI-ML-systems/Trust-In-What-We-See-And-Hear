@@ -451,16 +451,36 @@ def run_async(function):
     return anyio.run(function)
 
 
+async def decode_as(decoder, owner, data=None, ffmpeg_path="ffmpeg"):
+    return await decoder.decode(
+        wav(7) if data is None else data,
+        owner=owner,
+        ffmpeg_path=ffmpeg_path,
+        sample_rate=24000,
+        max_seconds=60,
+    )
+
+
+async def fill_decoders(decoder):
+    """Take every decoder slot, as if other uploads were being decoded.
+
+    Returns the tokens holding them, to release with release_on_behalf_of.
+    """
+    await decode_as(decoder, "warm-up")  # creates the limiters
+    tokens = [object() for _ in range(audio_module.MAX_CONCURRENT_DECODES)]
+    for token in tokens:
+        await decoder._slots.acquire_on_behalf_of(token)
+    return tokens
+
+
 def test_decoder_gives_up_when_all_decoders_are_busy(monkeypatch):
     monkeypatch.setattr(audio_module, "DECODER_WAIT_SECONDS", 0.05)
 
     async def scenario():
         decoder = AudioDecoder()
-        await decoder.decode(wav(7), ffmpeg_path="ffmpeg", sample_rate=24000, max_seconds=60)
-        for _ in range(audio_module.MAX_CONCURRENT_DECODES):
-            await decoder._slots.acquire_on_behalf_of(object())
+        await fill_decoders(decoder)
         with pytest.raises(AudioProcessingUnavailableError):
-            await decoder.decode(wav(7), ffmpeg_path="ffmpeg", sample_rate=24000, max_seconds=60)
+            await decode_as(decoder, ME)
 
     run_async(scenario)
 
@@ -470,20 +490,75 @@ def test_waiting_uploads_do_not_hold_shared_threads(monkeypatch):
 
     async def scenario():
         decoder = AudioDecoder()
-        await decoder.decode(wav(7), ffmpeg_path="ffmpeg", sample_rate=24000, max_seconds=60)
-        for _ in range(audio_module.MAX_CONCURRENT_DECODES):
-            await decoder._slots.acquire_on_behalf_of(object())
+        await fill_decoders(decoder)
         shared = anyio.to_thread.current_default_thread_limiter()
 
-        async def waiting_upload():
+        async def waiting_upload(owner):
             with pytest.raises(AudioProcessingUnavailableError):
-                await decoder.decode(wav(7), ffmpeg_path="ffmpeg", sample_rate=24000, max_seconds=60)
+                await decode_as(decoder, owner)
 
         async with anyio.create_task_group() as group:
-            for _ in range(50):
-                group.start_soon(waiting_upload)
+            for owner in range(50):
+                group.start_soon(waiting_upload, owner)
             await anyio.sleep(0.05)
             assert shared.borrowed_tokens == 0
+
+    run_async(scenario)
+
+
+def test_each_owner_has_one_upload_in_progress(monkeypatch):
+    # Otherwise one account could hold every decoder while other users wait.
+    monkeypatch.setattr(audio_module, "DECODER_WAIT_SECONDS", 0.2)
+
+    async def scenario():
+        decoder = AudioDecoder()
+        tokens = await fill_decoders(decoder)
+        outcomes = []
+
+        async def waiting_upload(owner):
+            try:
+                await decode_as(decoder, owner)
+            except (AudioProcessingUnavailableError, audio_module.DecodeInProgressError) as exc:
+                outcomes.append((owner, type(exc).__name__))
+
+        async with anyio.create_task_group() as group:
+            group.start_soon(waiting_upload, "first")
+            await anyio.sleep(0.05)  # "first" is now waiting for a decoder
+            group.start_soon(waiting_upload, "first")
+            group.start_soon(waiting_upload, "second")
+        assert sorted(outcomes) == [
+            ("first", "AudioProcessingUnavailableError"),
+            ("first", "DecodeInProgressError"),
+            ("second", "AudioProcessingUnavailableError"),
+        ]
+        # Every finished upload, failed or not, frees its owner.
+        assert decoder._owners == set()
+        for token in tokens:
+            decoder._slots.release_on_behalf_of(token)
+        assert (await decode_as(decoder, "first")).duration_seconds == pytest.approx(7.0)
+
+    run_async(scenario)
+
+
+def test_owner_is_freed_when_decoding_fails():
+    async def scenario():
+        decoder = AudioDecoder()
+        assert await decode_as(decoder, ME, data=b"definitely not audio") is None
+        with pytest.raises(AudioProcessingUnavailableError):
+            await decode_as(decoder, ME, ffmpeg_path="missing-ffmpeg-binary")
+        assert decoder._owners == set()
+        assert await decode_as(decoder, ME) is not None
+
+    run_async(scenario)
+
+
+def test_owner_is_freed_when_the_upload_is_cancelled():
+    async def scenario():
+        decoder = AudioDecoder()
+        await fill_decoders(decoder)
+        with anyio.move_on_after(0.05):  # the client went away while it waited
+            await decode_as(decoder, ME)
+        assert decoder._owners == set()
 
     run_async(scenario)
 
@@ -705,6 +780,15 @@ def test_uploads_at_the_limits_are_accepted(voice_client, db, storage, seconds, 
     db.on("GET", "voices", rows())
     db.on("POST", "voices", rows(voice_row(), status=201))
     assert upload(voice_client, wav(seconds, amplitude=amplitude)).status_code == 200
+
+
+def test_second_upload_while_the_first_is_decoding_is_429(application, voice_client, db, storage):
+    application.state.audio_decoder._owners.add(ME)  # an upload of ME's is decoding
+    response = upload(voice_client)
+    assert response.status_code == 429
+    assert response.json()["detail"]["code"] == "upload_in_progress"
+    assert storage.requests == []
+    assert db.requests == []
 
 
 def test_too_large_upload_is_413(application, voice_client, db, storage):

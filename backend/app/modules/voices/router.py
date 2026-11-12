@@ -33,6 +33,7 @@ from app.modules.voices.audio import (
     SUPPORTED_FORMATS,
     AudioDecoder,
     AudioProcessingUnavailableError,
+    DecodeInProgressError,
 )
 from app.modules.voices.schemas import VoiceResponse
 
@@ -82,6 +83,10 @@ NOT_FOUND = error_responses(
         error_responses(
             status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
             ("unsupported_audio", f"The file is not {SUPPORTED_FORMATS} audio."),
+        ),
+        error_responses(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            ("upload_in_progress", "Another upload by this user is still being processed."),
         ),
         # Joined with the shared 503 description, which a route's own 503 replaces.
         SERVICE_UNAVAILABLE_RESPONSES,
@@ -135,9 +140,16 @@ async def upload_voice_sample(
         decoder: AudioDecoder = request.app.state.audio_decoder
         info = await decoder.decode(
             data,
+            owner=user.user_id,
             ffmpeg_path=settings.ffmpeg_path,
             sample_rate=settings.voice_sample_rate,
             max_seconds=settings.voice_sample_max_seconds,
+        )
+    except DecodeInProgressError:
+        api_error(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            "upload_in_progress",
+            "Your previous recording is still being processed. Wait for it to finish.",
         )
     except AudioProcessingUnavailableError:
         logger.exception("Could not decode an uploaded voice sample.")
