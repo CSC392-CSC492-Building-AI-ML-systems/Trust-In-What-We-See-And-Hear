@@ -104,9 +104,20 @@ client  {"type": "hangup"}
 server  {"type": "call_ended", "reason": "hangup"}
 ```
 
+## Call results
+
+Not built yet. The plan: when a call ends, the pipeline scores it and writes
+the summary from the conversation it still holds in memory, then hands the
+result to the backend to store (the app does not keep transcripts, so this is
+the only place it can be done). The client uploads nothing. After
+`call_ended` it reads the result from `GET /api/v1/calls/<call_id>`, which
+may take a few seconds to be ready. The mock does not produce results.
+
 ## Not decided yet
 
 - How `POST /api/v1/calls` hands out the call ID and token.
+- How the pipeline hands call results to the backend, and how the client
+  knows they are ready.
 - Whether caller audio moves from WAV-per-message to raw binary PCM later
   (smaller, and playback can start sooner).
 - Interruption.
