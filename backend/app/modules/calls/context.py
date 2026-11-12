@@ -6,9 +6,9 @@ the database itself. Example input: `sample_call_context.json`.
 
 | Field | Suggested source | Required / default |
 |---|---|---|
-| persona.name | `users.display_name` of `calls.persona_user_id` | required |
+| persona.name | `users.first_name` + `users.last_name` of `calls.persona_user_id` | required |
 | persona.relationship | Persona's relationship to target | "friend" |
-| target.name | `users.display_name` of `calls.user_id` | empty |
+| target.name | `users.first_name` + `users.last_name` of `calls.user_id` | empty |
 | target.called_as | How the persona addresses the target | target.name |
 | scenario.title | `scam_scenarios.title` | required |
 | scenario.situation | `scam_scenarios.description` | required |

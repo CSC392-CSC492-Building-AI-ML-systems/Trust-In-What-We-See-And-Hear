@@ -12,10 +12,6 @@ Authentication is handled by **Supabase Auth**. The backend has no login or regi
 - The app profile (`public.users`) is created by the backend when the user finishes onboarding. A
   signed-in user without a profile gets `404` from `GET /api/v1/users/me` and should be sent to
   onboarding. See [database-schema.md](../supabase/database-schema.md#users) for why the table exists.
-- **Two-factor authentication (MFA) is required for every user**, using an authenticator app
-  (TOTP). TOTP is enabled in the Supabase project. The backend rejects any session where the user
-  has not entered their authenticator code with `403 mfa_required`, so the frontend needs a setup
-  screen and a code prompt at login ([section 2.9](#29-two-factor-authentication-mfa-required)).
 
 ```text
 Browser ──sign up / sign in──▶ Supabase Auth
@@ -46,7 +42,7 @@ In **Project Settings → API Keys** (and **Data API** for the URL), copy:
 |---|---|---|
 | Project URL (`https://<project-ref>.supabase.co`) | Frontend and backend | `NEXT_PUBLIC_SUPABASE_URL`, `SUPABASE_URL` |
 | Publishable key (`sb_publishable_…`, or the legacy `anon` key) | Frontend and backend | `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_PUBLISHABLE_KEY` |
-| Secret key (`sb_secret_…`, or the legacy `service_role` key) | Backend only, once it writes to the database | Not used yet. **Never** put it in the frontend or commit it. |
+| Secret key (`sb_secret_…`, or the legacy `service_role` key) | Backend only, to read and write the database | `SUPABASE_SECRET_KEY`. It bypasses Row Level Security: **never** put it in the frontend or commit it. |
 
 The publishable key is safe in the browser. Row Level Security protects the data.
 
@@ -106,7 +102,11 @@ these tables, but profile, friends and calls do not.
 ```dotenv
 SUPABASE_URL=https://<project-ref>.supabase.co
 SUPABASE_PUBLISHABLE_KEY=sb_publishable_...
+SUPABASE_SECRET_KEY=sb_secret_...
+PRIVACY_POLICY_VERSION=2026-11
 ```
+
+No quotes are needed around these values.
 
 `frontend/tiwwsah_webapp/.env.local`:
 
@@ -237,9 +237,6 @@ export const config = {
 
 Optionally, redirect signed-in users away from `/` to `/dashboard`.
 
-This proxy also needs the two-factor redirects from
-[2.9](#29-two-factor-authentication-mfa-required).
-
 Then remove the placeholder session: in `components/auth-panel.tsx`, the `document.cookie` line
 that sets a fake `scamai_session` cookie and the commented-out `/api/auth/test-session` call; and
 `SESSION_COOKIE_NAME` in `lib/auth.ts`.
@@ -279,7 +276,7 @@ const { data, error } = await supabase.auth.signUp({
   email,
   password,
   options: {
-    data: { full_name: name }, // only used to pre-fill the onboarding form
+    data: { first_name: firstName, last_name: lastName }, // copied into the profile at onboarding
   },
 });
 
@@ -302,7 +299,8 @@ With email confirmation on, Supabase does **not** return an error for an email t
 registered, so other people cannot find out which emails have accounts. Always show the
 "check your email" message.
 
-Check that `password` and `confirmPassword` match before calling `signUp`.
+Check that `password` and `confirmPassword` match before calling `signUp`. Trim both names and
+require 1–50 characters each: onboarding fails with `422 invalid_names` otherwise.
 
 **Terms checkbox**: move it to the onboarding form. The backend records privacy policy acceptance
 when it creates the user's profile row during onboarding (section 2.7).
@@ -395,9 +393,6 @@ Do not use `getSession()` to decide whether a user is signed in. Use `getClaims(
 How to handle the backend's auth errors (see [section 3](#3-backend-contract)):
 
 - `401`: the session has ended. Send the user to `/`.
-- `403` with `detail.code === "mfa_required"`: the user has not entered their authenticator code
-  this session. Send them to `/mfa`; do not sign them out. The proxy (2.9) normally stops this
-  before any request is made.
 - `503`: temporary. Show an error, but keep the user signed in.
 
 ### 2.7 Current user and onboarding
@@ -412,10 +407,6 @@ export async function getCurrentUser() {
   const response = await apiFetch("/api/v1/users/me");
 
   if (response.status === 401) return null;     // signed out
-  if (response.status === 403) {
-    const body = await response.json();
-    if (body.detail?.code === "mfa_required") redirect("/mfa"); // code not entered this session
-  }
   if (response.status === 404) redirect("/onboarding"); // signed in, no profile yet
   if (!response.ok) throw new Error("Unable to retrieve the current user.");
 
@@ -424,29 +415,59 @@ export async function getCurrentUser() {
 ```
 
 The `(app)` layout already redirects to `/` when this returns `null`. A `503` throws here, which
-shows the error page without signing the user out. The response shape follows the backend's
-`UserProfileResponse` (see `/docs` on the backend), not `first_name`/`last_name`. Its profile fields
-are still **TBD**; once `display_name` is included, show it in the sidebar.
+shows the error page without signing the user out. The profile looks like this (it replaces the
+current profile type; show `first_name` and `last_name` in the sidebar):
 
-`GET /users/me` still returns `501` until the backend implements it. Until then, the layout can read
-the signed-in user straight from Supabase:
-
-```ts
-const supabase = await createClient(); // lib/supabase/server
-const { data } = await supabase.auth.getUser();
-// data.user?.email, data.user?.user_metadata.full_name (set at sign-up)
+```json
+{
+  "user_id": "6f1c…",
+  "username": "alex_morgan",
+  "first_name": "Alex",
+  "last_name": "Morgan",
+  "preferred_language": "en",
+  "verified": false,
+  "onboarding_answers": { "age_range": "25-34", "interests": ["technology"] },
+  "created_at": "2026-11-07T12:00:00Z"
+}
 ```
 
+The email is not part of the profile. If a page needs it, read it from Supabase:
+`(await supabase.auth.getUser()).data.user?.email`.
+
 **Onboarding form**: submit to `POST /api/v1/users/me/onboarding` through a server action using
-`apiFetch`, then redirect to `/dashboard` (or `/verify-identity`). The form needs to collect what the
-`users` row requires:
+`apiFetch`, then redirect to `/dashboard` (or `/verify-identity`):
 
-- `username` (how friends find each other)
-- `display_name` (pre-fill from `user_metadata.full_name`)
-- privacy policy acceptance (checkbox)
-- the onboarding answers (age range, interests, …)
+```json
+{
+  "username": "alex_morgan",
+  "accept_privacy_policy": true,
+  "answers": { "age_range": "25-34", "interests": ["technology", "travel"] }
+}
+```
 
-The exact request body is **TBD** with the backend team; check `/docs` once the endpoint is built.
+- `username`: 3–30 lowercase letters, numbers or underscores. Lowercase what the user types.
+- The first and last name are **not** sent. The backend takes them from the user's Supabase
+  metadata (`user_metadata.first_name` and `user_metadata.last_name`, set at sign-up), removes
+  surrounding spaces and requires 1–50 characters each.
+- `accept_privacy_policy`: must be `true`; this is the terms checkbox.
+- `answers`: stored as sent, at most 10,000 bytes as JSON. The question set is still **TBD**.
+
+Responses:
+
+- `201` with the new profile.
+- `409` with `detail.code === "username_taken"`: ask for another username.
+- `409` with `detail.code === "profile_exists"`: onboarding is already done; go to `/dashboard`.
+- `422` with `detail.code === "invalid_names"`: the metadata has no valid first and last name.
+  Ask for them, save them with
+  `supabase.auth.updateUser({ data: { first_name, last_name } })`, then submit again.
+- Any other `422`: a field is invalid; `detail` says which.
+
+**Profile settings**: `PATCH /api/v1/users/me` changes only the fields that are sent (`username`,
+`first_name`, `last_name`, `preferred_language`, `onboarding_answers`). Send `"onboarding_answers": null` to
+remove the stored answers; the other fields cannot be `null`. `preferred_language` is a language
+tag of at most 35 characters (`en`, `fr-CA`). A taken username gets `409 username_taken`.
+After onboarding the profile is the source of truth for names: changing them here does not
+update `user_metadata`, and later metadata changes do not reach the profile.
 
 ### 2.8 Sign out (`components/sidebar.tsx`)
 
@@ -457,108 +478,7 @@ router.replace("/");
 router.refresh();
 ```
 
-### 2.9 Two-factor authentication (MFA, required)
-
-Every user must use an authenticator app (TOTP: Google Authenticator, 1Password, Authy, …). A
-session has an **assurance level**:
-
-- `aal1`: signed in with email and password only.
-- `aal2`: signed in with email and password **and** a code from the authenticator app.
-
-The backend only accepts `aal2` tokens; anything else gets `403 mfa_required`. So these screens are
-needed for the app to work at all:
-
-- **New user:** sign up → confirm email → set up an authenticator (`/mfa/setup`) → onboarding → app.
-- **Returning user:** sign in → enter the code (`/mfa`) → app.
-
-**Redirects in `proxy.ts`**
-
-After the `getClaims()` check in section 2.3, send every signed-in user who is not yet at `aal2` to
-the right page. Without this, a user could skip the code screen by typing another URL.
-
-```ts
-const path = request.nextUrl.pathname;
-const mfaRoutes = new Set(["/mfa", "/mfa/setup"]);
-
-if (isSignedIn && !publicRoutes.has(path) && !mfaRoutes.has(path)) {
-  const { data: aal } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
-
-  if (aal?.currentLevel !== "aal2") {
-    // nextLevel is "aal2" only if the user already has an authenticator.
-    const url = new URL(aal?.nextLevel === "aal2" ? "/mfa" : "/mfa/setup", request.url);
-    url.searchParams.set("next", path); // come back here afterwards
-    return NextResponse.redirect(url);
-  }
-}
-```
-
-`/auth/confirm` is left out on purpose: it must run first so the email link signs the user in.
-
-**Set up an authenticator (`app/mfa/setup/page.tsx`)**
-
-```ts
-const supabase = createClient(); // lib/supabase/client
-
-// 1. Remove any setup the user started earlier but did not finish.
-const { data: factors } = await supabase.auth.mfa.listFactors();
-for (const factor of factors?.all ?? []) {
-  if (factor.status === "unverified") {
-    await supabase.auth.mfa.unenroll({ factorId: factor.id });
-  }
-}
-
-// 2. Create the factor and show its QR code.
-const { data, error } = await supabase.auth.mfa.enroll({
-  factorType: "totp",
-  friendlyName: "Authenticator app",
-});
-// <img src={data.totp.qr_code} alt="Scan with your authenticator app" />
-// Also show data.totp.secret for users who cannot scan the code.
-
-// 3. The user enters the 6-digit code from their app to confirm it works.
-const { error: verifyError } = await supabase.auth.mfa.challengeAndVerify({
-  factorId: data.id,
-  code,
-});
-// Success: the session is now aal2.
-router.replace(safeNext(searchParams.get("next"))); // e.g. /onboarding for a new user
-router.refresh();
-```
-
-**Ask for the code at login (`app/mfa/page.tsx`)**
-
-```ts
-const { data: factors } = await supabase.auth.mfa.listFactors();
-const factor = factors?.totp[0]; // only verified factors are listed here
-
-const { error } = await supabase.auth.mfa.challengeAndVerify({
-  factorId: factor!.id,
-  code,
-});
-
-if (error) {
-  setError("That code didn't work. Check your authenticator app and try again.");
-  return;
-}
-
-router.replace(safeNext(searchParams.get("next")));
-router.refresh();
-```
-
-`safeNext` is the same same-site check as in section 2.5. Both pages should also have a **Sign out**
-button (section 2.8), for users who are stuck, e.g. without their phone.
-
-**Backup authenticator (Settings)**
-
-Supabase has no backup codes. Encourage users to add a second authenticator (another phone or a
-password manager) from Settings, using the same `enroll` and `challengeAndVerify` calls as setup.
-Supabase only allows this from an `aal2` session.
-
-**Lost authenticator.** If a user has lost every authenticator, a team member removes their factors
-in the Supabase dashboard (**Authentication → Users → (user)**) after confirming who they are. On
-their next sign-in, the proxy sends them to `/mfa/setup`.
-
-### 2.10 Checklist
+### 2.9 Checklist
 
 - [ ] `@supabase/supabase-js` and `@supabase/ssr` installed, `.env.local` filled in
 - [ ] `lib/supabase/client.ts` and `lib/supabase/server.ts`
@@ -566,14 +486,9 @@ their next sign-in, the proxy sends them to `/mfa/setup`.
 - [ ] Log in, register and forgot password in `auth-panel.tsx`
 - [ ] `app/auth/confirm/route.ts`
 - [ ] `/reset-password` page
-- [ ] `lib/api.ts`; `getCurrentUser` calls the backend and handles `401`, `403 mfa_required` and `404`
-- [ ] Onboarding collects username, display name and privacy policy acceptance (terms checkbox moved there)
+- [ ] `lib/api.ts`; `getCurrentUser` calls the backend and handles `401` and `404`
+- [ ] Onboarding collects username, first and last name and privacy policy acceptance (terms checkbox moved there)
 - [ ] Sign out in the sidebar
-- [ ] Two-factor redirects in `proxy.ts` (`/mfa` or `/mfa/setup`, with `next`)
-- [ ] `/mfa/setup` (QR code, confirm code, removes unfinished setups)
-- [ ] `/mfa` code prompt after sign-in
-- [ ] Sign out on both MFA pages
-- [ ] Add a backup authenticator in Settings
 
 ---
 
@@ -582,18 +497,16 @@ their next sign-in, the proxy sends them to `/mfa/setup`.
 - Every `/api/v1` route requires `Authorization: Bearer <access_token>`. `/health` does not.
 - `401`: the token is missing, invalid or expired. The frontend should sign the user out or send
   them to `/`.
-- `403` with `{"detail": {"code": "mfa_required", ...}}`: the token is valid, but it comes from a
-  session where the user has not entered their authenticator code (`aal1`). Two-factor
-  authentication is required for every user, so the backend only accepts `aal2` tokens. Send the
-  user to `/mfa` (or `/mfa/setup`); **do not sign them out**.
 - `503`: a temporary problem on the backend's side: Supabase is unreachable, rate limiting
   (`429`) or returned an unexpected response, or the backend is missing its Supabase settings.
   This says nothing about the token, so **do not sign the user out**; show an error and let them
   retry.
 - The user is always taken from the token. Never send a user ID to act as.
-- `GET /api/v1/users/me` returns `404` for a signed-in user without a profile *(planned)*.
-- `POST /api/v1/users/me/onboarding` creates the profile and returns it with `201` *(planned; body
-  TBD)*.
+- `GET /api/v1/users/me` returns the profile, or `404` for a signed-in user without one (onboarding
+  not finished).
+- `POST /api/v1/users/me/onboarding` creates the profile and returns it with `201`; `409` if the
+  username is taken or onboarding is already done (section 2.7).
+- `PATCH /api/v1/users/me` updates only the fields sent and returns the profile.
 
 Full API reference: `http://localhost:8000/docs` while the backend is running.
 
@@ -607,19 +520,16 @@ Full API reference: `http://localhost:8000/docs` while the backend is running.
 4. Register at `http://localhost:3000`. With email confirmation on, use a team member's email (the
    built-in sender only delivers to them) and click the link.
 5. Check **Authentication → Users** in the Supabase dashboard: the user is there.
-6. Set up an authenticator when the app asks (`/mfa/setup`), then check the user has an MFA factor
-   in the Supabase dashboard.
-7. To call the backend by hand, get an access token from a session that entered the authenticator
-   code: temporarily log `session.access_token` in `apiFetch` after signing in through the app. Then:
+6. To call the backend by hand, get an access token: temporarily log `session.access_token` in
+   `apiFetch` after signing in through the app, or sign in with curl
+   (`/auth/v1/token?grant_type=password`). Then:
 
    ```bash
    curl -i http://localhost:8000/api/v1/users/me -H "Authorization: Bearer <token>"
    ```
 
-   - `501`: the token was accepted (expected until the endpoint is built).
-   - `403` `mfa_required`: the token is valid but password-only (`aal1`). A token from signing in
-     with curl (`/auth/v1/token?grant_type=password`) always gets this, which is a quick way to
-     check that two-factor authentication is enforced.
+   - `404`: the token was accepted; the user has not finished onboarding yet.
+   - `200`: the token was accepted; the response is the user's profile.
    - `401`: the token was rejected.
    - `503`: the backend could not check the token; make sure `backend/.env` has the Supabase
      values and that the project is reachable.

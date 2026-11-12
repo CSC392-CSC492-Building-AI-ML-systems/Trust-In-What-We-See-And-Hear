@@ -1,9 +1,9 @@
 "use client";
 
 import { ArrowRight, LockKeyhole, ShieldCheck } from "lucide-react";
+import { createClient } from "@/lib/supabase/client";
 import { useRouter } from "next/navigation";
-import { FormEvent, useState } from "react";
-import { SESSION_COOKIE_NAME } from "@/lib/auth";
+import { FormEvent, useEffect, useState } from "react";
 
 type AuthMode = "login" | "register";
 
@@ -12,31 +12,94 @@ export function AuthPanel() {
   const [mode, setMode] = useState<AuthMode>("login");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+
+  useEffect(() => {
+    const query = new URLSearchParams(window.location.search);
+    if (query.get("email_verified") !== "true") return;
+
+    async function finishEmailVerification() {
+      const hash = new URLSearchParams(window.location.hash.slice(1));
+      const callbackError = query.get("error_description") ?? hash.get("error_description");
+
+      if (callbackError) {
+        setError(callbackError);
+      } else {
+        const supabase = createClient();
+        await supabase.auth.getSession();
+        await supabase.auth.signOut({ scope: "local" });
+        setSuccess("Email verified. You can now log in to your account.");
+      }
+
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+
+    finishEmailVerification();
+  }, []);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    document.cookie = `${SESSION_COOKIE_NAME}=test; Path=/; SameSite=Lax`
-    if (mode === "register") {
-      setError("Registration will be available when authentication is connected.");
-      return;
-    }
-
     setError("");
+    setSuccess("");
     setIsSubmitting(true);
-    
-    try {
-      //const response = await fetch("/api/auth/test-session", {
-      //  method: "POST",
-      //});
 
-      //if (!response.ok) {
-      //  throw new Error("Unable to start the test session.");
-      //}
-      
+    try {
+      const formData = new FormData(event.currentTarget);
+      const email = String(formData.get("email"));
+      const password = String(formData.get("password"));
+      const supabase = createClient();
+
+      if (mode === "register") {
+        const firstName = String(formData.get("firstName")).trim();
+        const lastName = String(formData.get("lastName")).trim();
+        const confirmPassword = String(formData.get("confirmPassword"));
+
+        if (password !== confirmPassword) {
+          setError("Passwords do not match.");
+          setIsSubmitting(false);
+          return;
+        }
+
+        const { error: signUpError } = await supabase.auth.signUp({
+          email,
+          password,
+          options: {
+            emailRedirectTo: `${window.location.origin}/?email_verified=true`,
+            data: {
+              display_name: {
+                first_name: firstName,
+                last_name: lastName,
+              },
+            },
+          },
+        });
+
+        if (signUpError) {
+          setError(signUpError.message);
+          setIsSubmitting(false);
+          return;
+        }
+
+        setMode("login");
+        setSuccess(`We sent a verification link to ${email}. Verify your email, then log in.`);
+        setIsSubmitting(false);
+        return;
+      } else {
+        const { error: signInError } = await supabase.auth.signInWithPassword({
+          email,
+          password,
+        });
+
+        if (signInError) {
+          setError(signInError.message);
+          setIsSubmitting(false);
+          return;
+        }
+      }
+
       router.replace("/verify-identity");
-      router.refresh();
     } catch {
-      setError("Unable to log in right now. Please try again.");
+      setError("Unable to reach the authentication service. Please try again.");
       setIsSubmitting(false);
     }
   }
@@ -44,6 +107,7 @@ export function AuthPanel() {
   function changeMode(nextMode: AuthMode) {
     setMode(nextMode);
     setError("");
+    setSuccess("");
   }
 
   return (
@@ -61,12 +125,18 @@ export function AuthPanel() {
         <button type="button" role="tab" aria-selected={mode === "register"} className={mode === "register" ? "auth-tab-active" : ""} onClick={() => changeMode("register")}>Register</button>
       </div>
 
-      <form className="auth-form" onSubmit={handleSubmit}>
+      <form className="auth-form" key={mode} onSubmit={handleSubmit}>
         {mode === "register" && (
-          <label>
-            Full name
-            <input name="name" type="text" autoComplete="name" placeholder="Alex Morgan" required />
-          </label>
+          <div className="auth-name-row">
+            <label>
+              First name
+              <input name="firstName" type="text" autoComplete="given-name" placeholder="Alex" required />
+            </label>
+            <label>
+              Last name
+              <input name="lastName" type="text" autoComplete="family-name" placeholder="Morgan" required />
+            </label>
+          </div>
         )}
 
         <label>
@@ -86,9 +156,7 @@ export function AuthPanel() {
           </label>
         )}
 
-        {mode === "login" ? (
-          <button className="auth-text-button auth-forgot" type="button">Forgot password?</button>
-        ) : (
+        {mode === "register" && (
           <label className="auth-checkbox auth-terms">
             <input type="checkbox" name="terms" required />
             <span>I agree to the terms and understand that ScamAI provides educational simulations.</span>
@@ -96,9 +164,10 @@ export function AuthPanel() {
         )}
 
         {error && <p className="auth-error" role="alert">{error}</p>}
+        {success && <p className="auth-success" role="status">{success}</p>}
 
         <button className="auth-submit" type="submit" disabled={isSubmitting}>
-          {isSubmitting ? "Logging in…" : mode === "login" ? "Log in" : "Create account"}
+          {isSubmitting ? (mode === "login" ? "Logging in…" : "Creating account…") : (mode === "login" ? "Log in" : "Create account")}
           <ArrowRight aria-hidden="true" />
         </button>
       </form>

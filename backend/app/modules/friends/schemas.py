@@ -1,21 +1,33 @@
+from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from app.api.schemas import RequestModel
+from app.api.schemas import Pagination, RequestModel
+from app.modules.users.public import PublicUser
+from app.modules.users.schemas import Username
 
 
 class FriendRequestCreate(RequestModel):
-    recipient_user_id: UUID
+    username: Username = Field(description="Username of the user to send the request to.")
+
+
+class FriendRequestQuery(Pagination):
+    direction: Literal["incoming", "outgoing"] | None = Field(
+        default=None,
+        description="Only incoming or only outgoing requests. Both if omitted.",
+    )
 
 
 class FriendRequestResponse(BaseModel):
     id: UUID
-    requester_user_id: UUID
-    recipient_user_id: UUID
-    status: Literal["pending", "accepted", "declined"]
+    direction: Literal["incoming", "outgoing"] = Field(
+        description="`incoming`: sent to the current user. `outgoing`: sent by them."
+    )
+    user: PublicUser = Field(description="The other user.")
+    created_at: datetime
 
 
-class FriendResponse(BaseModel):
-    user_id: UUID
+class FriendResponse(PublicUser):
+    friends_since: datetime
