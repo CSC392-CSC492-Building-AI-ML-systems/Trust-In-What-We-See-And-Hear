@@ -22,10 +22,11 @@ fields raise `CallContextValidationError`, with structured `errors` and
 must not start the agent. Optional fields may be dropped or use the documented
 fallback, with warnings. Issues contain a path, code and message.
 
-Only strings are accepted as text. Text is normalised, selected formatting
-characters are removed, and length limits are enforced. Required fields and
+Only strings are accepted as text. Whitespace is normalised, punctuation is
+preserved, and length limits are enforced. Required fields and
 names are rejected if too long rather than silently changing their meaning.
-Name/label checks restrict character shape only. Optional free text is capped;
+Names accept the profile schema's characters. Relationship labels restrict
+character shape only. Optional free text is capped;
 tactics and details are filtered before their item limits are applied.
 
 All resulting values remain untrusted. These checks do not detect instructions
@@ -42,13 +43,16 @@ import unicodedata
 from dataclasses import asdict, dataclass, field
 
 LIMITS = {
-    "name": 40, "relationship": 40, "called_as": 40, "title": 80,
+    "name": 101, "relationship": 40, "called_as": 101, "title": 80,
     "situation": 500, "ask": 160, "tactic": 40, "detail_key": 30,
     "detail_value": 100,
 }
 MAX_TACTICS = 6
 MAX_DETAILS = 8
-LABEL_FIELDS = {"name", "relationship", "called_as"}
+NAME_FIELDS = {"name", "called_as"}
+LABEL_FIELDS = NAME_FIELDS | {"relationship"}
+# Bound work before Unicode normalisation, even for whitespace-heavy inputs.
+MAX_RAW_TEXT = 10_000
 
 
 @dataclass(frozen=True)
@@ -70,21 +74,21 @@ class CallContextValidationError(ValueError):
         super().__init__("Invalid call context: " + "; ".join(map(str, errors)))
 
 
-def clean(value: str, limit: int | None = None) -> str:
-    """Normalise text, remove selected formatting characters, and optionally cap it.
+def clean(value: str, limit: int | None = None, *, name: bool = False) -> str:
+    """Normalise whitespace, preserve punctuation, and optionally cap text.
 
     The result remains untrusted prompt content. This is not HTML sanitisation
-    or instruction detection; removing brackets does not remove tag contents.
+    or instruction detection. Names retain the profile's Unicode characters;
+    compatibility normalisation could expand a valid name beyond its limit.
     """
-    s = unicodedata.normalize("NFKC", value)
+    s = value if name else unicodedata.normalize("NFKC", value)
     s = "".join(ch if ch.isprintable() else " " for ch in s)
-    s = re.sub(r"[\[\]{}<>`#*_|\\\"]", "", s)
     s = re.sub(r"\s+", " ", s).strip()
     return s if limit is None else s[:limit].strip()
 
 
 def _is_label(value: str) -> bool:
-    # Unicode letters/marks allow international names, including combining marks.
+    # Relationship labels allow Unicode letters, including combining marks.
     # This deliberately checks characters, not whether the words are instructions.
     return (
         unicodedata.category(value[0]).startswith("L")
@@ -134,9 +138,9 @@ class CallContext:
             raise CallContextValidationError(errors, warnings)
 
         def unknown(raw: dict, allowed: set[str], prefix: str = "") -> None:
-            for key in raw:
+            for index, key in enumerate(raw):
                 if key not in allowed:
-                    issue(f"{prefix}[{key!r}]", "unknown_field", "unknown field ignored")
+                    issue(f"{prefix or 'context'}[{index}]", "unknown_field", "unknown field ignored")
 
         def section(key: str, fields: set[str], *, required: bool = False) -> dict | None:
             if key not in data:
@@ -150,23 +154,32 @@ class CallContext:
             unknown(raw, fields, key)
             return raw
 
-        def text(value: object, path: str, kind: str, *, required: bool = False) -> str:
+        def text(value: object, path: str, kind: str, *, required: bool = False,
+                 report: bool = True) -> str:
+            def diagnostic(code: str, message: str) -> None:
+                if report:
+                    issue(path, code, message, fatal=required)
+
             if not isinstance(value, str):
-                issue(path, "invalid_type", "expected a string", fatal=required)
+                diagnostic("invalid_type", "expected a string")
                 return ""
-            value = clean(value)
+            if len(value) > MAX_RAW_TEXT:
+                diagnostic("too_long", f"raw text must be at most {MAX_RAW_TEXT} characters")
+                return ""
+            value = clean(value, name=kind in NAME_FIELDS)
             if not value:
-                issue(path, "empty", "empty after cleaning", fatal=required)
+                if required or kind not in LABEL_FIELDS:
+                    diagnostic("empty", "empty after cleaning")
                 return ""
             limit = LIMITS[kind]
             if len(value) > limit:
                 if required or kind in LABEL_FIELDS:
-                    issue(path, "too_long", f"must be at most {limit} characters", fatal=required)
+                    diagnostic("too_long", f"must be at most {limit} characters")
                     return ""
-                issue(path, "truncated", f"truncated to {limit} characters")
+                diagnostic("truncated", f"truncated to {limit} characters")
                 value = value[:limit].strip()
-            if kind in LABEL_FIELDS and not _is_label(value):
-                issue(path, "invalid_label", "expected letters and name/label punctuation", fatal=required)
+            if kind == "relationship" and not _is_label(value):
+                diagnostic("invalid_label", "expected letters and name/label punctuation")
                 return ""
             return value
 
@@ -200,19 +213,22 @@ class CallContext:
                 seen: set[str] = set()
                 for index, value in enumerate(raw_tactics):
                     path = f"scenario.tactics[{index}]"
-                    tactic = text(value, path, "tactic")
+                    at_limit = len(tactics) == MAX_TACTICS
+                    tactic = text(value, path, "tactic", report=not at_limit)
                     if not tactic:
                         continue
-                    if tactic in seen:
-                        issue(path, "duplicate", "duplicate tactic dropped")
+                    folded = tactic.casefold()
+                    if folded in seen:
+                        if not at_limit:
+                            issue(path, "duplicate", "duplicate tactic dropped")
                         continue
-                    seen.add(tactic)
+                    if at_limit:
+                        issue("scenario.tactics", "extra_items", f"only the first {MAX_TACTICS} valid tactics kept")
+                        break
+                    seen.add(folded)
                     tactics.append(tactic)
                 if raw_tactics and not tactics:
                     issue("scenario.tactics", "no_valid_items", "no valid tactics; omitted")
-                if len(tactics) > MAX_TACTICS:
-                    issue("scenario.tactics", "extra_items", f"only the first {MAX_TACTICS} valid tactics kept")
-                    tactics = tactics[:MAX_TACTICS]
 
         details: dict[str, str] = {}
         if "details" in data:
@@ -224,18 +240,21 @@ class CallContext:
                 extra = False
                 for index, (key, value) in enumerate(raw_details.items()):
                     path = f"details[{index}]"
-                    cleaned_key = text(key, f"{path}.key", "detail_key")
-                    cleaned_value = text(value, f"{path}.value", "detail_value")
+                    at_limit = len(details) == MAX_DETAILS
+                    cleaned_key = text(key, f"{path}.key", "detail_key", report=not at_limit)
+                    cleaned_value = text(value, f"{path}.value", "detail_value", report=not at_limit)
                     if not cleaned_key or not cleaned_value:
                         continue
                     if cleaned_key in seen_keys:
-                        issue(path, "duplicate", "duplicate cleaned key dropped; first value kept")
+                        if not at_limit:
+                            issue(path, "duplicate", "duplicate cleaned key dropped; first value kept")
                         continue
                     seen_keys.add(cleaned_key)
                     if len(details) < MAX_DETAILS:
                         details[cleaned_key] = cleaned_value
                     else:
                         extra = True
+                        break
                 if extra:
                     issue("details", "extra_items", f"only the first {MAX_DETAILS} valid details kept")
 
