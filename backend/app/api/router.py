@@ -16,7 +16,7 @@ from app.modules.friends.router import router as friends_router
 from app.modules.scenarios.router import router as scenarios_router
 from app.modules.users.router import router as users_router
 from app.modules.verification.router import router as verification_router
-from app.modules.voice_training.router import router as voice_training_router
+from app.modules.voices.router import router as voices_router
 
 router = APIRouter(prefix="/api/v1", responses=NOT_IMPLEMENTED_RESPONSES)
 
@@ -30,7 +30,7 @@ for feature_router in (
     friends_router,
     consents_router,
     calls_router,
-    voice_training_router,
+    voices_router,
     scenarios_router,
 ):
     protected_router.include_router(feature_router)
