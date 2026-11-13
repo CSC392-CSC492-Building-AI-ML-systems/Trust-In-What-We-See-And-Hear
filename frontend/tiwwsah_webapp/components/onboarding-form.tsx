@@ -66,3 +66,13 @@ export function OnboardingForm() {
     </form>
   );
 }
+
+/*
+
+Age range
+Interests 
+Technological Literacy
+Industry: The arts, tech, engineering, science, etc.
+Language
+
+*/
