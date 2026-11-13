@@ -4,6 +4,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import httpx
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -34,6 +35,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     application.state.settings = settings
+
+    application.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "http://localhost:3000/",
+            "http://127.0.0.1:3000/"
+        ],
+        allow_credentials=True,
+        allow_methods=[""],
+        allow_headers=[""],
+    )
+
     application.add_exception_handler(
         RequestValidationError, request_validation_error_handler
     )
