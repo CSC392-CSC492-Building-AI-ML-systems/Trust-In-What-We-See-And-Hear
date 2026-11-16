@@ -78,6 +78,11 @@ def test_add_scenario_without_profile_is_409(db_client, db):
         {"category": "crypto"},
         {"title": "  "},
         {"red_flags": ["x"] * 21},
+        # Limits of the call context, so any saved scenario can start a call.
+        {"title": "x" * 81},
+        {"description": "x" * 501},
+        {"red_flags": ["x" * 41]},
+        {"red_flags": [f"flag {n}" for n in range(7)]},
         {"max_duration_seconds": 10},
         {"ask": "  "},
         {"ask": "x" * 161},

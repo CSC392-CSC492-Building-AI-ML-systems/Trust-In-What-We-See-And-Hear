@@ -154,7 +154,8 @@ async def fail_stale_calls(
             "user_id": f"eq.{user_id}",
             "or": (
                 "(and(status.eq.queued,claim_expires_at.lt.now),"
-                f"and(status.eq.in_progress,started_at.lt.{started_before}))"
+                # Quoted: `.` and `:` are reserved inside PostgREST's or=(...).
+                f'and(status.eq.in_progress,started_at.lt."{started_before}"))'
             ),
         },
         {

@@ -202,6 +202,44 @@ def test_start_call_gives_the_caller_only_the_users_own_note(api, db):
     assert "friendship:friendships(" in db.sent("GET", "scam_consents")[0].url.params["select"]
 
 
+def timed_out(request):
+    raise httpx.ReadTimeout("no answer", request=request)
+
+
+@pytest.mark.parametrize("failure", [httpx.Response(503), timed_out])
+def test_failed_call_insert_gives_the_consent_back(api, db, failure):
+    db.on("GET", "scam_scenarios", rows(scenario()))
+    db.on("GET", "scam_consents", rows(consent()))
+    db.on("GET", "scam_consents", rows({"id": str(CONSENT_ID), "consenter_id": str(FRIEND)}))
+    db.on("GET", "voices", rows({"status": "ready"}))
+    db.on("PATCH", "scam_consents", rows(consent()), rows({"id": str(CONSENT_ID)}))
+    db.on("POST", "calls", failure)
+
+    response = api.post(
+        "/api/v1/calls", json={"consent_id": str(CONSENT_ID), "scenario_id": str(SCENARIO_ID)}
+    )
+
+    assert response.status_code == 503
+    used, restored = db.sent("PATCH", "scam_consents")
+    assert body(used) == {"used_at": "now"}
+    assert body(restored) == {"used_at": None}
+    assert restored.url.params["id"] == f"eq.{CONSENT_ID}"
+    assert restored.url.params["requester_id"] == f"eq.{ME}"
+
+
+def test_failed_restore_still_reports_the_original_error(api, db):
+    db.on("GET", "scam_scenarios", rows(scenario()))
+    db.on("GET", "scam_consents", rows(consent()))
+    db.on("GET", "scam_consents", rows({"id": str(CONSENT_ID), "consenter_id": str(FRIEND)}))
+    db.on("GET", "voices", rows({"status": "ready"}))
+    db.on("PATCH", "scam_consents", rows(consent()), httpx.Response(503))
+    db.on("POST", "calls", httpx.Response(503))
+    response = api.post(
+        "/api/v1/calls", json={"consent_id": str(CONSENT_ID), "scenario_id": str(SCENARIO_ID)}
+    )
+    assert response.status_code == 503
+
+
 def test_start_call_without_pipeline_is_503(api, db, application):
     application.state.settings.pipeline_ws_url = None
     response = api.post(
@@ -317,7 +355,7 @@ def test_reading_calls_fails_stale_ones(api, db):
     assert stale.url.params["user_id"] == f"eq.{ME}"
     assert stale.url.params["or"] == (
         "(and(status.eq.queued,claim_expires_at.lt.now),"
-        "and(status.eq.in_progress,started_at.lt.2026-11-10T11:45:00.000000Z))"
+        'and(status.eq.in_progress,started_at.lt."2026-11-10T11:45:00.000000Z"))'
     )
     assert body(stale) == {
         "status": "failed",

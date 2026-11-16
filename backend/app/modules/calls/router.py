@@ -36,6 +36,7 @@ from app.modules.calls.service import (
 )
 from app.modules.consents.service import (
     ConsentNotUsableError,
+    restore_consent,
     usable_filters,
     use_consent,
 )
@@ -126,23 +127,30 @@ async def start_call(
 
     token, token_hash = new_claim_token()
     claim_valid = timedelta(seconds=settings.call_claim_valid_seconds)
-    created = await supabase_db.insert(
-        "calls",
-        {
-            "user_id": str(user.user_id),
-            "persona_user_id": consent["consenter_id"],
-            "consent_id": str(payload.consent_id),
-            "scenario_id": scenario["id"],
-            "persona_name": full_name(consent["consenter"]),
-            "scenario_title": scenario["title"],
-            "status": "queued",
-            "claim_token_hash": token_hash,
-            "claim_expires_at": clock.to_iso(clock.now() + claim_valid),
-            "call_context": context.to_dict(),
-            "max_duration_seconds": scenario["max_duration_seconds"],
-        },
-        CALL_COLUMNS,
-    )
+    try:
+        created = await supabase_db.insert(
+            "calls",
+            {
+                "user_id": str(user.user_id),
+                "persona_user_id": consent["consenter_id"],
+                "consent_id": str(payload.consent_id),
+                "scenario_id": scenario["id"],
+                "persona_name": full_name(consent["consenter"]),
+                "scenario_title": scenario["title"],
+                "status": "queued",
+                "claim_token_hash": token_hash,
+                "claim_expires_at": clock.to_iso(clock.now() + claim_valid),
+                "call_context": context.to_dict(),
+                "max_duration_seconds": scenario["max_duration_seconds"],
+            },
+            CALL_COLUMNS,
+        )
+    except Exception:
+        # The consent was used up for this call, which does not exist, so give
+        # it back. If the insert did succeed and only its answer was lost, the
+        # consent can start one more call; a call nobody connects to times out.
+        await restore_consent(supabase_db, payload.consent_id, user.user_id)
+        raise
     base = settings.pipeline_ws_url.rstrip("/")
     ws_url = f"{base}/ws/calls/{created['id']}?token={quote(token, safe='')}"
     return CallStartResponse(**call_fields(created), ws_url=ws_url)
@@ -200,3 +208,4 @@ async def get_call_details(
         summary=to_summary(row),
         failure_reason=row["failure_reason"] if row["status"] == "failed" else None,
     )
+

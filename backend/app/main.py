@@ -8,6 +8,7 @@ import httpx
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.health import router as health_router
 from app.api.openapi import API_DESCRIPTION, OPENAPI_TAGS
@@ -39,6 +40,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     application.state.settings = settings
+    application.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000/",
+        "http://127.0.0.1:3000/",
+    ],
+    allow_credentials=True,
+    allow_methods=[""],
+    allow_headers=[""],
+    ) 
     application.state.audio_decoder = AudioDecoder()
     application.add_exception_handler(
         RequestValidationError, request_validation_error_handler

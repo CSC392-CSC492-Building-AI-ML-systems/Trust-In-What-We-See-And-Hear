@@ -5,6 +5,7 @@ from uuid import UUID
 from pydantic import BaseModel, Field, StringConstraints, model_validator
 
 from app.api.schemas import RequestModel
+from app.modules.calls.context import LIMITS, MAX_TACTICS
 
 ScamCategory = Literal[
     "grandparent_emergency",
@@ -18,10 +19,15 @@ ScamCategory = Literal[
 ]
 Difficulty = Literal["easy", "medium", "hard"]
 
-Title = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
+# Title, description, ask and red flags become the call context's scenario
+# (app/modules/calls/context.py), so they use its limits: a scenario that
+# can be saved can always start a call, and red flags are never cut short.
+Title = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=LIMITS["title"])
+]
 Description = Annotated[
     str,
-    StringConstraints(strip_whitespace=True, min_length=1, max_length=1000),
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=LIMITS["situation"]),
     Field(description="Shown to the user when choosing a scenario."),
 ]
 SystemPrompt = Annotated[
@@ -36,7 +42,7 @@ SystemPrompt = Annotated[
 ]
 Ask = Annotated[
     str,
-    StringConstraints(strip_whitespace=True, min_length=1, max_length=160),
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=LIMITS["ask"]),
     Field(
         description=(
             "What the caller asks the user to do, e.g. `Send $500 in gift cards`. "
@@ -44,11 +50,13 @@ Ask = Annotated[
         )
     ),
 ]
-RedFlag = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
+RedFlag = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=LIMITS["tactic"])
+]
 RedFlags = Annotated[
     list[RedFlag],
     Field(
-        max_length=20,
+        max_length=MAX_TACTICS,
         description="Warning signs the user should notice, e.g. `urgency`, `gift cards`.",
     ),
 ]
