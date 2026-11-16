@@ -31,6 +31,7 @@ What the mock does differently from the real pipeline:
 - speech is detected by loudness, so it needs a quiet room
 - any call ID and any non-empty token are accepted
 - `completed` is sent without waiting for the last turn to be played
+- call results are canned, not scored from the call
 
 Settings are environment variables, listed at the top of `mock_server.py`.
 For example, `MOCK_MAX_SECONDS=20` to see the `time_limit` ending, or
