@@ -10,6 +10,7 @@ from app.core.errors import (
     SERVICE_UNAVAILABLE_RESPONSES,
     UNAUTHORIZED_RESPONSES,
 )
+from app.modules.calls.internal import router as internal_calls_router
 from app.modules.calls.router import router as calls_router
 from app.modules.consents.router import router as consents_router
 from app.modules.friends.router import router as friends_router
@@ -36,3 +37,5 @@ for feature_router in (
     protected_router.include_router(feature_router)
 
 router.include_router(protected_router)
+# Authenticated with the voice pipeline's shared secret instead of a user's token.
+router.include_router(internal_calls_router)

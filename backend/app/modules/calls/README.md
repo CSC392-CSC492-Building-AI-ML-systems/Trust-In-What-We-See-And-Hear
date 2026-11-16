@@ -5,9 +5,10 @@ assembles a call and the call agent. It accepts an object, validates and
 normalises it, and returns `(context, warnings)`. The agent receives only the
 context. See `sample_call_context.json` for a complete example.
 
-The endpoint and agent integration are currently stubs. This module does not
-perform consent, friendship, voice or authentication checks. The future caller
-must perform those checks first and must not start the agent if validation fails.
+`POST /calls` (`router.py`) performs the consent, friendship, voice and
+authentication checks, then builds the context with `build_context` in
+`service.py`. If validation fails, the call is not created and the consent is
+not used up.
 
 ## Required data
 
@@ -125,10 +126,10 @@ facts are true, or prevent prompt injection. Cleaned values remain untrusted.
 The call agent must keep trusted instructions separate from this data and apply
 its own safeguards before generating speech.
 
-Two database mappings remain unresolved: there is no source column for
-`scenario.ask`, and the team must choose whose onboarding answers populate
-`details`. The assembling code must supply an explicit ask; there is no fallback
-money request. Endpoint and agent integration must handle this validation API.
-Local issue drafts for both decisions are in [FOLLOW_UPS.md](FOLLOW_UPS.md).
+`scenario.ask` comes from `scam_scenarios.ask` (migration 0005). Scenarios
+created before that column have no ask, and `POST /calls` refuses them with
+`scenario_incomplete`; there is no fallback money request. Whose onboarding
+answers populate `details` is still undecided, so `details` is empty. See
+[FOLLOW_UPS.md](FOLLOW_UPS.md).
 
 AI-assisted documentation (Codex), cited per the CSC398 AI policy.

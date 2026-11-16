@@ -34,6 +34,16 @@ SystemPrompt = Annotated[
         )
     ),
 ]
+Ask = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=160),
+    Field(
+        description=(
+            "What the caller asks the user to do, e.g. `Send $500 in gift cards`. "
+            "Passed to the call agent as the scam's request."
+        )
+    ),
+]
 RedFlag = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
 RedFlags = Annotated[
     list[RedFlag],
@@ -52,6 +62,7 @@ class ScenarioCreate(RequestModel):
     category: ScamCategory
     difficulty: Difficulty = "medium"
     description: Description
+    ask: Ask
     system_prompt: SystemPrompt
     red_flags: RedFlags = Field(default_factory=list)
     max_duration_seconds: MaxDuration = 300
@@ -64,6 +75,7 @@ class ScenarioUpdate(RequestModel):
     category: ScamCategory | None = None
     difficulty: Difficulty | None = None
     description: Description | None = None
+    ask: Ask | None = None
     system_prompt: SystemPrompt | None = None
     red_flags: RedFlags | None = None
     max_duration_seconds: MaxDuration | None = None
@@ -85,6 +97,12 @@ class ScenarioResponse(BaseModel):
     category: ScamCategory
     difficulty: Difficulty
     description: str
+    ask: str | None = Field(
+        description=(
+            "What the caller asks the user to do. Null only for scenarios created "
+            "before this field existed; calls cannot start with those until it is set."
+        )
+    )
     system_prompt: str | None = Field(
         description="Only returned for the current user's own scenarios; null for built-in ones."
     )

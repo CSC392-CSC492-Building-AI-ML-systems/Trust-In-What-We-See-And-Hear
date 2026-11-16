@@ -3,7 +3,11 @@
 These are local drafts for the two issues requested in PR #7. They have not
 been published to GitHub.
 
-## Decide and implement the source of `scenario.ask`
+## Decide and implement the source of `scenario.ask` (done)
+
+Resolved in KAN-18: `scam_scenarios.ask` (migration 0005), required when a
+scenario is created. Built-in scenarios added before it need an ask set before
+they can start a call.
 
 The call context requires an explicit `scenario.ask`, but `scam_scenarios` has
 no column for it. The call endpoint cannot assemble a valid context until the

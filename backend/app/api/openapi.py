@@ -5,9 +5,9 @@ Backend API for Trust In What We See And Hear.
 
 **Status:** in progress. Authentication (Supabase Auth),
 the current user's profile (`/api/v1/users/me`) and voice sample
-(`/api/v1/users/me/voice`), friends, consents and scenarios are implemented.
-Every other `/api/v1` operation currently returns `501 Not Implemented` once
-authenticated.
+(`/api/v1/users/me/voice`), friends, consents, scenarios and calls are
+implemented. Every other `/api/v1` operation currently returns
+`501 Not Implemented` once authenticated.
 
 ## Conventions
 
@@ -16,7 +16,8 @@ authenticated.
   on the client; this API has no login or registration routes.
   Every `/api/v1` route requires `Authorization: Bearer <token>`, using the
   access token from the client's Supabase session. The acting user is taken
-  from the token, never from the request.
+  from the token, never from the request. The exception is `/api/v1/internal`,
+  which only the voice pipeline calls, with its own shared secret.
 - **Authentication errors:** `401` means the token is missing, invalid or
   expired; the client should sign the user in again. `503` means
   authentication is temporarily unavailable (for example Supabase is down or
@@ -38,8 +39,8 @@ authenticated.
 3. Add friends.
 4. Request consent from a friend to use their profile and voice. Once they
    accept, the consent can be used for one call, until it expires.
-5. Start a call with that consent and a scenario, then review the result in
-   call history.
+5. Start a call with that consent and a scenario, connect to the returned
+   `ws_url` to take it, then review the result in call history.
 """
 
 OPENAPI_TAGS = [
@@ -70,7 +71,18 @@ OPENAPI_TAGS = [
     },
     {
         "name": "Calls",
-        "description": "Simulated scam calls, each based on a consent and a scenario.",
+        "description": (
+            "Simulated scam calls, each based on a consent and a scenario. "
+            "Starting a call uses up the consent and returns `ws_url`, where the "
+            "browser connects to the voice pipeline for the call's audio."
+        ),
+    },
+    {
+        "name": "Internal",
+        "description": (
+            "For the voice pipeline only (voice-pipeline/BACKEND.md), authenticated "
+            "with its shared secret rather than a user's token."
+        ),
     },
     {
         "name": "Voice",
@@ -85,8 +97,7 @@ OPENAPI_TAGS = [
         "description": (
             "Scam scenarios that calls are based on. Users see the active "
             "built-in scenarios and their own, and can only change their own.\n\n"
-            "**TBD:** the fields the call agent needs (for example the "
-            "scammer's request, and the format of `system_prompt`)."
+            "**TBD:** the format of `system_prompt`; the call agent does not use it yet."
         ),
     },
 ]

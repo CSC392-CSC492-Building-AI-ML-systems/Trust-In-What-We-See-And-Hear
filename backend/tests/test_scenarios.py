@@ -18,6 +18,7 @@ NEW_SCENARIO = {
     "category": "bank_fraud_alert",
     "difficulty": "hard",
     "description": "Your bank says your card was used abroad.",
+    "ask": "Read out the PIN for your card.",
     "system_prompt": "You are a bank fraud agent...",
     "red_flags": ["urgency", "asks for PIN"],
 }
@@ -31,6 +32,7 @@ def scenario_row(created_by=ME, **changes):
         "category": "bank_fraud_alert",
         "difficulty": 3,
         "description": "Your bank says your card was used abroad.",
+        "ask": "Read out the PIN for your card.",
         "system_prompt": "You are a bank fraud agent...",
         "red_flags": ["urgency", "asks for PIN"],
         "max_duration_seconds": 300,
@@ -77,6 +79,8 @@ def test_add_scenario_without_profile_is_409(db_client, db):
         {"title": "  "},
         {"red_flags": ["x"] * 21},
         {"max_duration_seconds": 10},
+        {"ask": "  "},
+        {"ask": "x" * 161},
         {"created_by": None},  # cannot create built-in scenarios
         {"content": {}},
     ],
@@ -86,7 +90,20 @@ def test_add_scenario_rejects_invalid_bodies(db_client, db, changes):
     assert response.status_code == 422
 
 
+def test_add_scenario_requires_ask(db_client, db):
+    without_ask = {key: value for key, value in NEW_SCENARIO.items() if key != "ask"}
+    response = db_client.post("/api/v1/scenarios", json=without_ask)
+    assert response.status_code == 422
+
+
 # GET /scenarios and /scenarios/{id}
+
+
+def test_scenario_from_before_ask_existed_has_null_ask(db_client, db):
+    db.on("GET", "scam_scenarios", rows(scenario_row(ask=None)))
+    response = db_client.get(f"/api/v1/scenarios/{SCENARIO_ID}")
+    assert response.status_code == 200
+    assert response.json()["ask"] is None
 
 
 def test_list_scenarios_hides_built_in_prompts(db_client, db):
