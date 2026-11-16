@@ -1,0 +1,40 @@
+# Project-wide ignore rules.
+# backend/ and frontend/tiwwsah_webapp/ have their own .gitignore files for
+# rules that only apply to them; this file covers everything else.
+
+# OS files
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+desktop.ini
+*.swp
+*~
+
+# Editors
+.vscode/
+.idea/
+*.code-workspace
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+*.pem
+
+# Logs
+*.log
+logs/
+
+# Dependencies and caches
+node_modules/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Supabase CLI local state
+supabase/.branches/
+supabase/.temp/

@@ -260,4 +260,4 @@ def test_database_outage_is_503(db_client, db):
     db.on("GET", "friendships", httpx.Response(503))
     response = db_client.get("/api/v1/friends")
     assert response.status_code == 503
-    assert response.json() == {"detail": "The database is unavailable."}
+    assert response.json() == {"detail": "A backend service is unavailable. Try again later."}
