@@ -129,7 +129,7 @@ async def finish_onboarding(
     be done once per user.
     """
     try:
-        names = SignUpNames.model_validate(user.user_metadata)
+        names = SignUpNames.model_validate(user.user_metadata.get("display_name"))
     except ValidationError:
         _invalid_names()
     row = {

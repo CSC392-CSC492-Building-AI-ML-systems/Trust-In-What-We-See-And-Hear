@@ -104,6 +104,17 @@ button { cursor: pointer; }
 .onboarding-control svg { width: 17px; height: 17px; flex: 0 0 17px; color: var(--violet-600); }
 .onboarding-control input, .onboarding-control select { width: 100%; min-width: 0; height: 44px; padding: 0; border: 0; outline: 0; color: var(--ink); background: transparent; font: inherit; font-size: 13px; }
 .onboarding-control input::placeholder, .onboarding-control select:invalid { color: #9fa8be; }
+.onboarding-field-wide { grid-column: 1 / -1; }
+fieldset.onboarding-field { min-width: 0; margin: 0; padding: 0; border: 0; }
+.onboarding-field > legend { display: flex; align-items: center; gap: 7px; margin-bottom: 7px; padding: 0; }
+.onboarding-field > legend small { color: #939db5; font-size: 9px; font-weight: 650; letter-spacing: .05em; text-transform: uppercase; }
+.onboarding-options { display: flex; flex-wrap: wrap; gap: 8px; }
+.onboarding-option { display: flex; align-items: center; gap: 7px; padding: 9px 12px; border: 1px solid #dbe0ee; border-radius: 9px; background: white; color: var(--ink); font-size: 12px; font-weight: 600; cursor: pointer; transition: border-color 140ms ease, background 140ms ease; }
+.onboarding-option:hover { border-color: #8174ff; }
+.onboarding-option:has(input:checked) { border-color: #8174ff; background: #f0efff; }
+.onboarding-option input { margin: 0; accent-color: var(--violet-600); }
+.onboarding-option input:focus-visible { outline: 2px solid #8174ff; outline-offset: 2px; }
+.onboarding-error { margin: 18px 0 0; padding: 11px 14px; border-radius: 9px; color: #b42318; background: #fef3f2; font-size: 12px; line-height: 1.5; }
 .onboarding-developer-note { margin: 20px 0 0; padding: 12px 14px; border: 1px dashed #c9cfe0; border-radius: 9px; color: #7b849c; background: #f8f9fc; font-size: 11px; line-height: 1.5; }
 .onboarding-developer-note strong { color: #555f78; }
 .onboarding-privacy { display: flex; gap: 12px; margin-top: 22px; padding: 15px; border-radius: 11px; color: #5547d7; background: #f0efff; }
