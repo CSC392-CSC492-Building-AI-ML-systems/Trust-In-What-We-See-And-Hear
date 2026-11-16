@@ -6,7 +6,9 @@ Same messages as mock_server.py, with real models behind them:
 
 The conversation lives in `CallSession.history`, in memory, for the length of
 the call. Nothing here writes it to disk or to the logs: the app does not
-keep transcripts. Logs carry timings only.
+keep transcripts. Logs carry timings only. When the call ends it is scored
+from that conversation (scoring.py), the result is reported, and the
+conversation is cleared.
 
 AI-assisted code (written with Claude Code), cited per the CSC398 AI policy.
 """
@@ -20,13 +22,13 @@ import json
 import logging
 import time
 import wave
-from contextlib import aclosing
+from contextlib import aclosing, asynccontextmanager
 from typing import Any, AsyncIterator
 
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, HTTPException, WebSocket
 from starlette.websockets import WebSocketDisconnect
 
-from .calls import CallsUnavailable, VoiceError, fetch_voice, wav_seconds
+from .calls import CallReport, CallsUnavailable, VoiceError, fetch_voice, wav_seconds
 from .chunker import SpeechChunker, strip_tags
 from .config import Settings
 from .context import CallContext, CallContextValidationError
@@ -34,6 +36,7 @@ from .models import Models
 from .parts import Piece, Utterance
 from .prompt import OPENING_NOTE, build_system_prompt, hint_words, prompt_safe
 from .reply_filter import clean_reply, names_and_first_names, safe_destinations, split_end
+from .scoring import score_call
 
 log = logging.getLogger("pipeline.call")
 IN_RATE = 16_000  # microphone audio the client sends
@@ -58,6 +61,8 @@ class CallSession:
                  models: Models, settings: Settings, max_seconds: float) -> None:
         self.ws = ws
         self.id = call_id
+        self.ctx = ctx
+        self.answered_at: float | None = None
         self.voice = voice  # this call's voice handle; dropped when the call ends
         self.models = models
         self.settings = settings
@@ -226,6 +231,7 @@ class CallSession:
             return False
         if kind == "answered":
             if self.timer is None:
+                self.answered_at = time.monotonic()
                 self.timer = asyncio.create_task(asyncio.sleep(self.max_seconds))
                 self.start_turn()
         elif kind == "played":
@@ -301,7 +307,8 @@ async def load_voice(source: str, models: Models) -> Any:
 
 
 async def serve_call(ws: WebSocket, call_id: str, token: str, *, calls: Any,
-                     models: Models, settings: Settings, active: set) -> None:
+                     models: Models, settings: Settings, active: set,
+                     finishing: set) -> None:
     await ws.accept()
     if not token:
         await ws.close(code=4401, reason="missing or invalid token")
@@ -319,6 +326,8 @@ async def serve_call(ws: WebSocket, call_id: str, token: str, *, calls: Any,
         return
     slot = object()
     active.add(slot)
+    session: CallSession | None = None
+    ended_by: str | None = None  # set once the call is claimed: it then gets a report
     try:
         try:
             setup = await calls.claim(call_id, token)
@@ -329,6 +338,7 @@ async def serve_call(ws: WebSocket, call_id: str, token: str, *, calls: Any,
         if setup is None:
             await ws.close(code=4401, reason="missing or invalid token")
             return
+        ended_by = "error"
         try:
             ctx, warnings = CallContext.from_dict(setup.context)
             voice = await load_voice(setup.voice, models)
@@ -344,26 +354,83 @@ async def serve_call(ws: WebSocket, call_id: str, token: str, *, calls: Any,
             return
         for warning in warnings:
             log.warning("call %s context: %s", call_id, warning)
+        ended_by = "hangup"  # what a client that just disconnects counts as
         reason = await session.run()
+        ended_by = reason or ended_by
         log.info("call %s ended: %s, %s caller turns", call_id,
                  reason or "client disconnected", session.turns)
     except WebSocketDisconnect:
         log.info("call %s: client disconnected", call_id)
     finally:
-        active.discard(slot)
+        active.discard(slot)  # scoring needs no line, so the next call can start
+        if ended_by is not None:
+            # A task of its own: this handler can be cancelled when the
+            # connection goes away, and the result must not go with it.
+            task = asyncio.create_task(wrap_up(
+                call_id, session, ended_by, calls=calls, models=models, settings=settings))
+            finishing.add(task)
+            task.add_done_callback(finishing.discard)
+
+
+async def wrap_up(call_id: str, session: CallSession | None, ended_by: str, *,
+                  calls: Any, models: Models, settings: Settings) -> None:
+    """Score the call and report it. After this the conversation is gone."""
+    result = None
+    seconds = 0
+    if session is not None:
+        if session.answered_at is not None:
+            seconds = round(time.monotonic() - session.answered_at)
+        try:
+            result = await asyncio.wait_for(
+                score_call(models.llm, session.ctx, session.history, ended_by, call_id),
+                settings.score_timeout_seconds)
+        except Exception as e:
+            # The error's type only: its text could quote the conversation.
+            log.error("call %s could not be scored: %s", call_id, type(e).__name__)
+        session.history.clear()
+    try:
+        await calls.report(call_id, CallReport(ended_by, seconds, result))
+    except Exception as e:
+        log.error("call %s could not be reported: %s", call_id, type(e).__name__)
 
 
 def create_app(models: Models, calls: Any, settings: Settings) -> FastAPI:
-    app = FastAPI(title="Call audio server")
     active: set = set()
+    finishing: set = set()  # calls that ended and are being scored and reported
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        yield
+        if finishing:  # let them finish before the server stops
+            await asyncio.wait(set(finishing), timeout=settings.score_timeout_seconds + 30)
+
+    app = FastAPI(title="Call audio server", lifespan=lifespan)
 
     @app.get("/health")
     def health() -> dict:
         return {"status": "ok", "calls": len(active), "voice_engine": models.tts.info.name}
 
+    if hasattr(calls, "reports"):
+        # Without a backend (calls.DevCalls): serve results the way the
+        # backend will, so a call can be checked from start to result.
+        @app.get("/api/v1/calls/{call_id}")
+        def call_details(call_id: str, token: str = "") -> dict:
+            if not calls.accepts(token):
+                raise HTTPException(status_code=401, detail="Missing or invalid token")
+            if call_id not in calls.reports:
+                raise HTTPException(status_code=404, detail="Call not found")
+            report = calls.reports[call_id]
+            if report is None:
+                return {"id": call_id, "status": "in_progress", "summary": None}
+            if report.result is None or report.ended_by == "error":
+                return {"id": call_id, "status": "failed", "summary": None}
+            summary = {k: v for k, v in report.result.items() if k != "model_version"}
+            return {"id": call_id, "status": "completed",
+                    "summary": {**summary, "duration_seconds": report.duration_seconds}}
+
     @app.websocket("/ws/calls/{call_id}")
     async def call_socket(ws: WebSocket, call_id: str, token: str = "") -> None:
         await serve_call(ws, call_id, token, calls=calls, models=models,
-                         settings=settings, active=active)
+                         settings=settings, active=active, finishing=finishing)
 
     return app

@@ -4,7 +4,10 @@ A client connects with a call ID and a token. The pipeline turns those into
 a CallSetup: the call context, where the persona's voice recording is, and
 the time limit.
 
-Two sources, with the same `claim` method:
+When the call is over, the pipeline hands back a CallReport: how it ended and
+its score.
+
+Two sources, with the same `claim` and `report` methods:
 
 BackendCalls asks the backend, as described in BACKEND.md. Used when
 PIPELINE_BACKEND_URL is set.
@@ -26,8 +29,10 @@ AI-assisted code (written with Claude Code), cited per the CSC398 AI policy.
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 import json
+import logging
 import os
 import tempfile
 import wave
@@ -40,6 +45,7 @@ import httpx
 SAMPLE_CONTEXT = (Path(__file__).resolve().parents[2]
                   / "backend/app/modules/calls/sample_call_context.json")
 MAX_VOICE_BYTES = 25 * 1024 * 1024
+log = logging.getLogger("pipeline.calls")
 
 
 @dataclass
@@ -49,13 +55,43 @@ class CallSetup:
     max_duration_seconds: float
 
 
+@dataclass
+class CallReport:
+    """What the pipeline says about a call once it is over."""
+
+    ended_by: str  # the call_ended reason
+    duration_seconds: int
+    result: dict | None  # the score and summary (scoring.py), or None if there is none
+
+    def body(self) -> dict:
+        return {"ended_by": self.ended_by, "duration_seconds": self.duration_seconds,
+                "result": self.result}
+
+
 class DevCalls:
+    KEPT_REPORTS = 50
+
     def __init__(self, token: str, voice: str, context_path: str | Path = SAMPLE_CONTEXT,
                  max_duration_seconds: float = 300.0):
         self.token = token
         self.voice = voice
         self.context_path = Path(context_path)
         self.max_duration_seconds = max_duration_seconds
+        # call ID -> its report, or None while the call is going on. In memory
+        # only, for looking at results without a backend (see session.py).
+        self.reports: dict[str, CallReport | None] = {}
+
+    def accepts(self, token: str) -> bool:
+        return bool(self.token) and hmac.compare_digest(token.encode(), self.token.encode())
+
+    def _keep(self, call_id: str, report: CallReport | None) -> None:
+        self.reports.pop(call_id, None)
+        self.reports[call_id] = report
+        while len(self.reports) > self.KEPT_REPORTS:
+            del self.reports[next(iter(self.reports))]  # oldest first
+
+    async def report(self, call_id: str, report: CallReport) -> None:
+        self._keep(call_id, report)
 
     @classmethod
     def from_env(cls) -> DevCalls:
@@ -66,8 +102,9 @@ class DevCalls:
 
     async def claim(self, call_id: str, token: str) -> CallSetup | None:
         """The setup for this call, or None if the token is not accepted."""
-        if not self.token or not hmac.compare_digest(token.encode(), self.token.encode()):
+        if not self.accepts(token):
             return None
+        self._keep(call_id, None)
         return CallSetup(json.loads(self.context_path.read_text()), self.voice,
                          self.max_duration_seconds)
 
@@ -79,10 +116,12 @@ class CallsUnavailable(Exception):
 class BackendCalls:
     """Asks the backend to check the token and hand over the call's setup."""
 
-    def __init__(self, url: str, secret: str, client: httpx.AsyncClient | None = None):
+    def __init__(self, url: str, secret: str, client: httpx.AsyncClient | None = None,
+                 report_retry_seconds: tuple[float, ...] = (1.0, 4.0)):
         self.url = url.rstrip("/")
         self.secret = secret
         self.client = client
+        self.report_retry_seconds = report_retry_seconds
 
     @classmethod
     def from_env(cls) -> BackendCalls:
@@ -116,6 +155,33 @@ class BackendCalls:
                              float(body["max_duration_seconds"]))
         except (ValueError, TypeError, KeyError) as e:
             raise CallsUnavailable("the backend's answer was not understood") from e
+
+    async def report(self, call_id: str, report: CallReport) -> None:
+        """Hand the call's result to the backend. Tries a few times, then gives up.
+
+        The result exists nowhere else, so a backend that stays down loses it.
+        """
+        url = f"{self.url}/api/v1/internal/calls/{quote(call_id, safe='')}/result"
+        client = self.client or httpx.AsyncClient(timeout=10)
+        try:
+            for delay in (*self.report_retry_seconds, None):
+                try:
+                    response = await client.post(
+                        url, json=report.body(),
+                        headers={"Authorization": f"Bearer {self.secret}"})
+                    if response.status_code < 300:
+                        return
+                    problem = f"the backend answered {response.status_code}"
+                    if response.status_code < 500 and response.status_code != 429:
+                        break  # it understood and refused; asking again will not help
+                except httpx.HTTPError:
+                    problem = "the backend could not be reached"
+                if delay is not None:
+                    await asyncio.sleep(delay)
+            log.error("call %s: result not delivered, %s", call_id, problem)
+        finally:
+            if self.client is None:
+                await client.aclose()
 
 
 class VoiceError(Exception):

@@ -37,6 +37,9 @@ in `backend/`.
   a test checks this.
 - **One voice per call.** The voice is prepared from the recording when the
   call connects and dropped when it ends. Never cache it between calls.
+- **The score is checked, not trusted.** The LLM's grade goes through
+  `scoring.parse_result` before it is reported. The result must not quote
+  the call: no transcripts applies to it too.
 - **Fake payment details only.** Every reply goes through
   `reply_filter.safe_destinations` before it is spoken.
 - **Context values are untrusted.** Anything from the call context goes
@@ -68,10 +71,10 @@ in `backend/`.
 
 ## Current state (2026-11-16)
 
-- The mock is PR #13 (branch `voice-pipeline-mock`), approved and not merged
-  yet. It has the mock's `POST /api/v1/calls` and call results, and
-  `BACKEND.md`. That branch's `BACKEND.md`, `PROTOCOL.md` and `README.md`
-  differ from this branch's only where they mention `pipeline/`.
+- The mock (PR #13) is merged into `main`, with its `POST /api/v1/calls`,
+  call results and `BACKEND.md`. `main`'s `BACKEND.md`, `PROTOCOL.md` and
+  `README.md` differ from this branch's only where they mention `pipeline/`.
+  The real pipeline is draft PR #14 (branch `voice-pipeline-port`).
 - The real pipeline passed its first GPU run (scripted four-turn calls on an
   L40). Not yet tried: a real person's voice, the `completed` ending on a
   GPU, Chatterbox Turbo.
@@ -81,9 +84,10 @@ in `backend/`.
 - Call setup: `calls.BackendCalls` (claims the call from the backend) when
   `PIPELINE_BACKEND_URL` is set, otherwise `calls.DevCalls` (one token, one
   voice file, the sample context). Only `DevCalls` has run for real.
-- Not built: real call scoring. When a call ends the server should score it
-  from the conversation in memory and post the result to the backend
-  (`BACKEND.md` section 3). The result fields are the `call_results` table's.
+- Call scoring (`scoring.py`) is built and tested with a fake LLM. It has not
+  run against the real LLM, so the grading prompt is untried. When a call
+  ends, `session.wrap_up` scores it in a background task, reports it through
+  `calls.report`, and clears the conversation.
 
 AI-assisted documentation (written with Claude Code), cited per the CSC398 AI
 policy.

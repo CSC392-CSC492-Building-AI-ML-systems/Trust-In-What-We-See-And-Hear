@@ -96,9 +96,12 @@ stays `in_progress`. The backend should mark such calls `failed` after
 
 ## 3. Handing over the result: `POST /api/v1/internal/calls/<call id>/result`
 
-Not built on either side yet. Sent once by the pipeline after every call
-that was claimed, a few seconds after it ends, with the same `Authorization`
-header.
+The pipeline side is built (`pipeline/scoring.py` and `BackendCalls.report`).
+The backend side is not. Sent by the pipeline after every call that was
+claimed, a few seconds after it ends, with the same `Authorization` header.
+If the backend is down or answers 429 or 5xx, the pipeline tries twice more
+over about five seconds and then gives up, so the endpoint should accept the
+same result twice.
 
 ```json
 {
@@ -121,8 +124,11 @@ header.
 - `ended_by`: the `call_ended` reason (`hangup`, `time_limit`, `completed`,
   `error`).
 - `result` matches the `call_results` table column for column. It is `null`
-  when the call could not be scored. A call too short to judge is scored as
-  `inconclusive`.
+  when the call could not be scored, or never started.
+- A call where the user said nothing is `inconclusive` with a `score` of 0.
+  The score means nothing for that outcome and should not be shown.
+- `red_flags_noticed` and `red_flags_missed` only contain values from the
+  scenario's `tactics`, when it has any.
 - The backend stores the result, sets `ended_at` and `duration_seconds`, and
   sets the call to `completed`, or `failed` when `ended_by` is `error` or
   `result` is `null`.

@@ -40,7 +40,8 @@ For example, `MOCK_MAX_SECONDS=20` to see the `time_limit` ending, or
 ## The real pipeline
 
 Run once on a GPU (2026-11-12, an L40): scripted four-turn calls worked end
-to end. Its tests use fake models.
+to end. Call scoring was added after that run and has only been tested with
+a fake LLM. The tests use fake models.
 
 ```
 microphone -> segmenter -> speech to text -> LLM -> chunker -> voice
@@ -56,13 +57,16 @@ microphone -> segmenter -> speech to text -> LLM -> chunker -> voice
 | `prompt.py` | The caller's instructions, built from the call context |
 | `chunker.py`, `reply_filter.py` | Cut the reply into speakable chunks and clean it |
 | `tts/chatterbox.py` | The voice (Chatterbox). Other engines plug in here, see `parts.py` |
-| `calls.py` | Where a call's context and voice recording come from |
+| `calls.py` | Where a call's context and voice recording come from, and where its result goes |
+| `scoring.py` | Scores a finished call with the LLM and checks the answer |
 | `server.py` | Loads the models and starts the server |
 
 Things it guarantees:
 
 - The conversation is held in memory for the call only. It is never written
-  to disk or to logs.
+  to disk or to logs. When the call ends it is scored, and then cleared.
+- The score and summary are checked before they leave: they cannot carry an
+  email, website or phone number that was said on the call.
 - The persona's voice is loaded from their recording for each call and
   dropped when the call ends.
 - Any email, website or phone number the caller says is rewritten to a fake
@@ -77,7 +81,8 @@ PIPELINE_DEV_TOKEN=... PIPELINE_DEV_VOICE=/path/to/voice.wav \
 ```
 
 Run like that, every call uses that one token, that one voice recording and
-the backend's sample call context. With `PIPELINE_BACKEND_URL` and
+the backend's sample call context, and its result can be read from
+`GET /api/v1/calls/<id>?token=...` on the same server. With `PIPELINE_BACKEND_URL` and
 `PIPELINE_BACKEND_SECRET` set instead, each call is checked with the backend
 (BACKEND.md), which does not have those endpoints yet. Other settings are
 environment variables, listed at the top of each module.

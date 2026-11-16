@@ -6,6 +6,7 @@ real. Only the four models are fakes, so this runs without a GPU.
 AI-assisted code (written with Claude Code), cited per the CSC398 AI policy.
 """
 
+import asyncio
 import base64
 import copy
 import io
@@ -65,10 +66,27 @@ class FakeSTT:
         return self.results.pop(0) if self.results else Heard("Who is this?", True)
 
 
+GRADE = {"outcome": "recognized_scam", "score": 90, "summary": "You refused to pay.",
+         "did_well": ["You asked who was calling."], "to_improve": [],
+         "red_flags_noticed": ["urgency"], "red_flags_missed": [],
+         "sensitive_info_shared": False}
+
+
 class FakeLLM:
+    model = "fake-llm"
+
     def __init__(self, *replies):
         self.replies = list(replies)
         self.seen = []  # the messages of each request
+        self.grades = []  # what complete() answers; GRADE once these run out
+        self.graded = []  # the messages of each scoring request
+
+    async def complete(self, messages):
+        self.graded.append(copy.deepcopy(messages))
+        grade = self.grades.pop(0) if self.grades else json.dumps(GRADE)
+        if isinstance(grade, Exception):
+            raise grade
+        return grade
 
     async def stream(self, messages):
         self.seen.append(copy.deepcopy(messages))
@@ -461,13 +479,201 @@ def test_what_was_said_never_reaches_the_logs(rig, caplog):
     rig.stt.results = [Heard("My dog is called Biscuit.", True)]
     rig.llm.replies = ["I need your help.", "Please do not mention the marmalade to anyone."]
     with caplog.at_level(logging.DEBUG):
-        with rig.client().websocket_connect(URL) as ws:
+        one_turn_call(rig)
+    assert "turn 2" in caplog.text  # timings are logged
+    assert "scored: recognized_scam, 90" in caplog.text
+    for private in ("Biscuit", "marmalade", "I need your help", "Alex", "Sam",
+                    "You refused to pay"):
+        assert private not in caplog.text
+
+
+# ---------------------------------------------------------------- call results
+RESULT = "/api/v1/calls/call-1?token=secret"
+
+
+def one_turn_call(rig, hang_up=True):
+    """A call where the user speaks once. Without hang_up the client just leaves.
+
+    Scoring happens after the call, in the background. The server waits for
+    it when it stops, so it is done by the time this returns.
+    """
+    with rig.client() as client:
+        with client.websocket_connect(URL) as ws:
+            answer(ws)
+            assert client.get(RESULT).json() == {"id": "call-1", "status": "in_progress",
+                                                 "summary": None}
+            say_something(ws)
+            assert ws.receive_json()["type"] == "speech_end"
+            read_turn(ws, 2)
+            if hang_up:
+                ws.send_json({"type": "hangup"})
+                assert ws.receive_json()["type"] == "call_ended"
+
+
+def test_a_finished_call_is_scored_from_the_conversation(rig):
+    rig.stt.results = [Heard("I am not sending you any money.", True)]
+    rig.llm.replies = ["Hey, it's me. [sigh] I lost my phone.", "Please, I only need five hundred."]
+    one_turn_call(rig)
+    body = rig.client().get(RESULT).json()
+    assert body["status"] == "completed"
+    assert body["summary"] == {**GRADE, "duration_seconds": 0}
+    report = rig.calls.reports["call-1"]
+    assert report.ended_by == "hangup"
+    assert report.result["model_version"] == "fake-llm/score-v1"
+
+    [system, said] = rig.llm.graded[0]
+    assert said == {"role": "user", "content":
+                    "Caller: Hey, it's me. I lost my phone.\n"
+                    "Trainee: I am not sending you any money.\n"
+                    "Caller: Please, I only need five hundred."}
+    assert "pretended to be Sam, the trainee's friend" in system["content"]
+    assert "urgency, secrecy, guilt" in system["content"]
+    assert "The trainee hung up." in system["content"]
+
+
+def test_results_need_the_token_and_a_known_call(rig):
+    client = rig.client()
+    assert client.get("/api/v1/calls/call-1").status_code == 401
+    assert client.get("/api/v1/calls/call-1?token=wrong").status_code == 401
+    assert client.get(RESULT).status_code == 404
+
+
+def test_a_call_where_the_user_said_nothing_is_inconclusive_without_the_llm(rig):
+    with rig.client() as client:
+        with client.websocket_connect(URL) as ws:
+            answer(ws)
+            ws.send_json({"type": "hangup"})
+            assert ws.receive_json()["type"] == "call_ended"
+    assert rig.llm.graded == []
+    assert rig.client().get(RESULT).json()["summary"]["outcome"] == "inconclusive"
+
+
+def test_a_client_that_vanishes_still_gets_a_result(rig):
+    one_turn_call(rig, hang_up=False)
+    report = rig.calls.reports["call-1"]
+    assert (report.ended_by, report.result["outcome"]) == ("hangup", "recognized_scam")
+
+
+@pytest.mark.parametrize("grades", [
+    ["not json", "still not json"],
+    [RuntimeError("the LLM is down")],
+])
+def test_a_call_that_cannot_be_scored_is_reported_without_a_result(rig, grades, caplog):
+    rig.llm.grades = grades
+    one_turn_call(rig)
+    report = rig.calls.reports["call-1"]
+    assert (report.ended_by, report.result) == ("hangup", None)
+    assert rig.client().get(RESULT).json() == {"id": "call-1", "status": "failed", "summary": None}
+    assert "the LLM is down" not in caplog.text
+
+
+def test_a_slow_score_is_given_up_on(rig):
+    async def never(messages):
+        await asyncio.sleep(60)
+
+    rig.llm.complete = never
+    rig.settings = Settings(played_grace_seconds=0.05, score_timeout_seconds=0.05)
+    one_turn_call(rig)
+    assert rig.calls.reports["call-1"].result is None
+
+
+def test_one_unusable_answer_is_asked_again(rig):
+    rig.llm.grades = ["Sure! Here is the grade."]
+    one_turn_call(rig)
+    assert len(rig.llm.graded) == 2
+    assert rig.calls.reports["call-1"].result["score"] == 90
+
+
+def test_a_claimed_call_that_could_not_start_is_reported_as_failed(rig, tmp_path):
+    rig.calls.voice = str(tmp_path / "missing.wav")
+    with rig.client() as client:
+        with client.websocket_connect(URL) as ws:
+            assert ws.receive_json()["code"] == "setup_failed"
+            assert ws.receive_json()["type"] == "call_ended"
+    report = rig.calls.reports["call-1"]
+    assert (report.ended_by, report.duration_seconds, report.result) == ("error", 0, None)
+
+
+def test_a_refused_token_gets_no_report(rig):
+    with rig.client() as client:
+        with client.websocket_connect("/ws/calls/call-1?token=wrong") as ws:
+            with pytest.raises(WebSocketDisconnect):
+                ws.receive_json()
+    assert rig.calls.reports == {}
+
+
+def test_the_conversation_is_dropped_once_the_call_is_scored(rig, monkeypatch):
+    sessions = []
+    init = session_module.CallSession.__init__
+
+    def remember(self, *args, **kwargs):
+        init(self, *args, **kwargs)
+        sessions.append(self)
+
+    monkeypatch.setattr(session_module.CallSession, "__init__", remember)
+    one_turn_call(rig)
+    assert rig.llm.graded and sessions[0].history == []
+
+
+def test_the_line_is_free_while_a_call_is_being_scored(rig):
+    rig.settings = Settings(played_grace_seconds=0.05, max_calls=1)
+    scoring_may_finish = []
+
+    async def complete(messages):
+        while not scoring_may_finish:
+            await asyncio.sleep(0.01)
+        return json.dumps(GRADE)
+
+    rig.llm.complete = complete
+    with rig.client() as client:
+        with client.websocket_connect(URL) as ws:
             answer(ws)
             say_something(ws)
             assert ws.receive_json()["type"] == "speech_end"
             read_turn(ws, 2)
             ws.send_json({"type": "hangup"})
             assert ws.receive_json()["type"] == "call_ended"
-    assert "turn 2" in caplog.text  # timings are logged
-    for private in ("Biscuit", "marmalade", "I need your help", "Alex", "Sam"):
-        assert private not in caplog.text
+        # The first call is still being scored, and the only line is free.
+        with client.websocket_connect("/ws/calls/call-2?token=secret") as other:
+            assert other.receive_json()["type"] == "ready"
+            assert rig.calls.reports["call-1"] is None
+            other.send_json({"type": "hangup"})
+            assert other.receive_json()["type"] == "call_ended"
+        scoring_may_finish.append(True)
+    assert rig.calls.reports["call-1"].result["score"] == 90
+
+
+def test_a_handler_cut_off_mid_call_still_reports_it(rig):
+    # The server can cancel the connection's handler. The report must survive.
+    async def scenario():
+        reports = []
+
+        class Calls:
+            async def claim(self, call_id, token):
+                return await rig.calls.claim(call_id, token)
+
+            async def report(self, call_id, report):
+                reports.append((call_id, report.ended_by))
+
+        class Socket:  # connects, then never sends anything
+            async def accept(self): ...
+            async def send_text(self, data): ...
+            async def close(self, code=1000, reason=None): ...
+
+            async def receive(self):
+                await asyncio.sleep(60)
+
+        finishing = set()
+        handler = asyncio.create_task(session_module.serve_call(
+            Socket(), "call-1", "secret", calls=Calls(), settings=rig.settings,
+            models=Models(rig.stt, rig.tts, rig.llm, FakeSegmenter), active=set(),
+            finishing=finishing))
+        await asyncio.sleep(0.05)
+        handler.cancel()
+        await asyncio.wait([handler])
+        assert handler.cancelled()
+        if finishing:  # empty again once the report is done
+            await asyncio.wait(set(finishing))
+        return reports
+
+    assert asyncio.run(scenario()) == [("call-1", "hangup")]

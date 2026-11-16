@@ -24,6 +24,9 @@ class Settings:
     history_messages: int = 20
     # Turns that may fail in a row before the call ends with reason "error".
     max_failed_turns: int = 2
+    # Longest the LLM may take to score a call after it ends. Past this the
+    # call is reported without a result.
+    score_timeout_seconds: float = 45.0
 
     @classmethod
     def from_env(cls) -> Settings:

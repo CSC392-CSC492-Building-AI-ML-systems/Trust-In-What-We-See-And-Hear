@@ -1,4 +1,5 @@
 """Streams the caller's reply from an OpenAI-compatible chat server (vLLM).
+Also asks it for one whole reply, to score a finished call (scoring.py).
 
 Settings (environment variables):
     LLM_URL     default http://localhost:8100/v1/chat/completions
@@ -23,6 +24,7 @@ class ChatLLM:
                  presence_penalty: float = 0.3, temperature: float = 0.8,
                  max_tokens: int = 160, client: httpx.AsyncClient | None = None):
         self.url = url
+        self.model = model
         self.client = client or httpx.AsyncClient(timeout=60)
         self.options = {
             "model": model, "stream": True, "max_tokens": max_tokens,
@@ -54,3 +56,22 @@ class ChatLLM:
                 delta = (choices[0].get("delta") or {}).get("content")
                 if delta:
                     yield delta
+
+    async def complete(self, messages: list[dict], *, max_tokens: int = 500) -> str:
+        """One whole reply, asked for as a JSON object. Used to score a call.
+
+        Steadier settings than the caller's: low temperature and no penalties,
+        which would push the model away from repeating the key names.
+        """
+        body = {**self.options, "messages": messages, "stream": False,
+                "max_tokens": max_tokens, "temperature": 0.2,
+                "repetition_penalty": 1.0, "presence_penalty": 0.0,
+                "response_format": {"type": "json_object"}}
+        response = await self.client.post(self.url, json=body)
+        if response.status_code == 400:
+            # A server that does not know response_format. The prompt asks
+            # for JSON as well, and the caller checks the answer either way.
+            del body["response_format"]
+            response = await self.client.post(self.url, json=body)
+        response.raise_for_status()
+        return response.json()["choices"][0]["message"]["content"] or ""
