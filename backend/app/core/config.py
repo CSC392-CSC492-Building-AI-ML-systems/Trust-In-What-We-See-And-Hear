@@ -13,6 +13,9 @@ class Settings(BaseSettings):
 
     app_name: str = "Trust In What We See And Hear API"
     environment: str = "development"
+    # Browser origins allowed to call the API (exact scheme://host:port, no trailing slash). In an
+    # env file, a JSON list: CORS_ALLOW_ORIGINS=["http://localhost:3000"]
+    cors_allow_origins: list[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
     supabase_url: str | None = None
     supabase_publishable_key: SecretStr | None = None
     # Bypasses Row Level Security. Backend only; never send it to a client.
