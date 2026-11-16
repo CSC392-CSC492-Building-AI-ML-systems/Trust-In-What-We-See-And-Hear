@@ -201,5 +201,7 @@ Language:
 Family structure: list family members? mom, dad, sibling, dog, etc. a call can come about a
 neice where they don't have one. it's a good space to tailor it.
 
+get location -> prompt location
+static page so user can read the privacy policy / terms and conditions.
 
 */
