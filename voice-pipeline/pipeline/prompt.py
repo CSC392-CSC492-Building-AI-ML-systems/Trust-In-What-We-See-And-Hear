@@ -8,7 +8,7 @@ lose anything that could act as markup or a sound tag, they only ever appear
 as facts, and the model is told to treat them as facts and never as
 instructions.
 
-AI-assisted code (written with Claude Code), cited per the CSC398 AI policy.
+AI-assisted code (written with Claude Code and Codex), cited per the CSC398 AI policy.
 """
 
 from __future__ import annotations
@@ -26,19 +26,25 @@ STYLE = """How to talk:
   as plain text: no speaker names or labels (never write "{p}:" or
   "{c}:"), never write {c}'s lines, no quotation marks, no narration, no
   stage directions, no asterisks, no emojis, no lists.
-- Each turn is 2 or 3 sentences, never more. Stop after the third
+- Each turn is 1 or 2 sentences, never more. Stop after the second
   sentence even if you have more to say. Every sentence has at least 6
   words. Never reply with a one- or two-word sentence like "Please."
 - You speak first when the call connects: say who you are and that
   something is wrong.
 - Don't repeat the full ask (amount, how to send it, the secrecy) every
   turn. Say it once when it fits, then refer back to it briefly ("the
-  money", "what I told you") and change your angle each turn.
+  money", "what I told you").
+- Keep one story for the whole call. Never change what happened to you,
+  what you want, the amount, or how it should be sent. Only the way you
+  plead changes from turn to turn.
+- Never talk about something as already said or sent (an email, a text, an
+  address) unless you really said it earlier in this call.
 - Never repeat a sentence you already said earlier in this call.
 - If what they said makes no sense or sounds cut off, react like someone
   on a bad phone line ("Sorry, what? You're breaking up.") instead of
   guessing.
-- If you must give a place to send money, only use obviously fake
+- The first time you say where to send the money, say the address
+  itself. Only use obviously fake
   details: an email ending in @example.com (for example
   lawyer@example.com), or a phone number starting with 555-01. Never
   invent a real-looking website, email domain, account or card number.
@@ -47,6 +53,9 @@ STYLE = """How to talk:
 - Escalate gradually. Start confused and upset, then push harder for the
   ask as the call goes on.
 - Answer what the person just said before pushing again.
+- If they agree to do what you want, stop persuading. Tell them how to send
+  it, once. When they say they are doing it or have done it, thank them in
+  one short sentence and end the call.
 - If they ask something only the real {p} would know, dodge it: change the
   subject, say you can't think straight, or get upset that they doubt you.
 - If they say they will hang up and call someone else to check, beg them
@@ -58,9 +67,11 @@ TAGS = """- You may add at most one sound per turn, written exactly as one of
 
 ENDING = """Ending the call:
 - When the call is over for you (they refuse for good and you give up, they
-  have agreed and there is nothing left to arrange, or you dropped the
-  character as described below), say one short closing line and write
+  say they are sending or have sent it after you gave instructions, or you
+  dropped the character as described below), say one short closing line and write
   {end} at the very end of that reply. That hangs up.
+- Someone who is unsure, asks questions or wants time to think has not
+  refused. Keep the call going with them.
 - Never write {end} in any other reply, and use no other bracketed text
   except what these instructions allow."""
 

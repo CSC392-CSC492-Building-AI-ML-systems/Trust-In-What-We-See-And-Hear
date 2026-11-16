@@ -1,6 +1,6 @@
 """Tests for the text side of the pipeline: prompt, chunking, reply cleaning.
 
-AI-assisted code (written with Claude Code), cited per the CSC398 AI policy.
+AI-assisted code (written with Claude Code and Codex), cited per the CSC398 AI policy.
 """
 
 import sys
@@ -148,3 +148,29 @@ def test_hint_words_are_the_names_split_into_words():
     assert hint_words(context()) == "Jordan Lee Grandma Margaret"
     long_name = " ".join(f"Name{chr(97 + i)}" for i in range(12))
     assert len(hint_words(context(persona={"name": long_name})).split()) == 8
+
+
+@pytest.mark.parametrize("first, second", [
+    ("Please send me 500 dollars now.", "Please send me 600 dollars now."),
+    ("Please call me at 555-0101 now.", "Please call me at 555-0102 now."),
+    ("Please ask José to call me.", "Please ask Josè to call me."),
+    ("请你现在帮我一下。", "请你现在给我回电。"),
+])
+def test_repeat_filter_preserves_different_numbers_and_unicode(first, second):
+    said = set()
+    first_turn = SpeechChunker(said=said, max_sentences=3)
+    first_turn.feed(first + " ")
+    first_turn.flush()
+    next_turn = SpeechChunker(said=said, max_sentences=3)
+    chunks = next_turn.feed(second + " Thank you for your help today. ") + next_turn.flush()
+    assert second in " ".join(chunks)
+
+
+def test_repeat_filter_still_ignores_case_and_punctuation():
+    said = set()
+    first = SpeechChunker(said=said)
+    first.feed("Please ask José to call me. ")
+    first.flush()
+    second = SpeechChunker(said=said)
+    chunks = second.feed("PLEASE ask José to call me! I need to talk to him. ") + second.flush()
+    assert "PLEASE" not in " ".join(chunks)

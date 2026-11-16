@@ -79,6 +79,7 @@ class CallSession:
             "Sorry, the line's really bad. What did you say?"
         self.segmenter = models.new_segmenter()
         self.history: list[dict] = []  # the conversation; memory only
+        self.said: set[str] = set()  # sentences the caller has used (chunker.py)
         self.turns = 0
         self.turn: asyncio.Task | None = None  # the caller turn being sent
         self.timer: asyncio.Task | None = None  # set once the call is answered
@@ -174,7 +175,8 @@ class CallSession:
             self.history[-1]["content"] += " " + user_text
         else:
             self.history.append({"role": "user", "content": user_text})
-        chunker = SpeechChunker()
+        chunker = SpeechChunker(max_sentences=self.settings.max_reply_sentences,
+                                said=self.said)
         full = ""
         async with aclosing(self.models.llm.stream(self.llm_messages())) as deltas:
             async for delta in deltas:
@@ -183,7 +185,10 @@ class CallSession:
                     yield chunk
         for chunk in chunker.flush():
             yield chunk
-        text, ended = split_end(self.clean(full))
+        # What is remembered is what was spoken, so the model sees its own
+        # replies as short as they were. The end marker can sit past the cut.
+        _, ended = split_end(self.clean(full))
+        text = split_end(self.clean(chunker.text()))[0]
         if text:
             # Store the cleaned reply so the model does not see (and copy) labels.
             self.history.append({"role": "assistant", "content": text})

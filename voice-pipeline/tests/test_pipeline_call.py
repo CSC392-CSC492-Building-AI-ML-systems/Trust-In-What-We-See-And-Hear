@@ -3,7 +3,7 @@
 The session, the model glue (threads and the GPU lock) and the WebSocket are
 real. Only the four models are fakes, so this runs without a GPU.
 
-AI-assisted code (written with Claude Code), cited per the CSC398 AI policy.
+AI-assisted code (written with Claude Code and Codex), cited per the CSC398 AI policy.
 """
 
 import asyncio
@@ -66,10 +66,9 @@ class FakeSTT:
         return self.results.pop(0) if self.results else Heard("Who is this?", True)
 
 
-GRADE = {"outcome": "recognized_scam", "score": 90, "summary": "You refused to pay.",
-         "did_well": ["You asked who was calling."], "to_improve": [],
-         "red_flags_noticed": ["urgency"], "red_flags_missed": [],
-         "sensitive_info_shared": False}
+GRADE = {"trainee_response": "refused", "payment_sent": False, "details_shared": [], "tactics_used": ["urgency"],
+         "red_flags_noticed": ["urgency"], "score": 90, "summary": "You refused to pay.",
+         "did_well": ["You asked who was calling."], "to_improve": []}
 
 
 class FakeLLM:
@@ -576,16 +575,22 @@ def test_a_finished_call_is_scored_from_the_conversation(rig):
     one_turn_call(rig)
     body = rig.client().get(RESULT).json()
     assert body["status"] == "completed"
-    assert body["summary"] == {**GRADE, "duration_seconds": 0}
+    assert body["summary"] == {
+        "outcome": "recognized_scam", "score": 90, "summary": "You refused to pay.",
+        "did_well": ["You asked who was calling."], "to_improve": [],
+        "red_flags_noticed": ["urgency"], "red_flags_missed": [],
+        "sensitive_info_shared": False, "duration_seconds": 0}
     report = rig.calls.reports["call-1"]
     assert report.ended_by == "hangup"
-    assert report.result["model_version"] == "fake-llm/score-v1"
+    assert report.result["model_version"] == "fake-llm/score-v2"
 
     [system, said] = rig.llm.graded[0]
-    assert said == {"role": "user", "content":
-                    "Caller: Hey, it's me. I lost my phone.\n"
-                    "Trainee: I am not sending you any money.\n"
-                    "Caller: Please, I only need five hundred."}
+    assert said["content"].startswith(
+        "CALL START\n"
+        "Caller: Hey, it's me. I lost my phone.\n"
+        "Trainee: I am not sending you any money.\n"
+        "Caller: Please, I only need five hundred.\n"
+        "CALL END\n")
     assert "pretended to be Sam, the trainee's friend" in system["content"]
     assert "urgency, secrecy, guilt" in system["content"]
     assert "The trainee hung up." in system["content"]
@@ -739,3 +744,49 @@ def test_a_handler_cut_off_mid_call_still_reports_it(rig):
         return reports
 
     assert asyncio.run(scenario()) == [("call-1", "hangup")]
+
+
+# ---------------------------------------------------------------- short, fresh replies
+def test_a_long_reply_is_cut_to_three_sentences_and_remembered_that_way(rig):
+    rig.llm.replies = ["Hey, it is me calling. I lost my phone today. I really need your help. "
+                       "Please send me some money. I will pay you back."]
+    with rig.client().websocket_connect(URL) as ws:
+        turn = answer(ws)
+        say_something(ws)
+        assert ws.receive_json()["type"] == "speech_end"
+        read_turn(ws, 2)
+    assert spoken_text(turn) == "Hey, it is me calling. I lost my phone today. I really need your help."
+    assert rig.llm.seen[1][2]["content"] == spoken_text(turn)  # what the LLM is shown next
+
+
+def test_a_sentence_the_caller_already_said_is_not_said_again(rig):
+    rig.llm.replies = ["Hey, it is me calling. I really need your help today.",
+                       "I really need your help today. Okay, okay. Can you send the money now?"]
+    with rig.client().websocket_connect(URL) as ws:
+        answer(ws)
+        say_something(ws)
+        assert ws.receive_json()["type"] == "speech_end"
+        turn = read_turn(ws, 2)
+    assert spoken_text(turn) == "Okay, okay. Can you send the money now?"
+
+
+def test_a_reply_that_only_repeats_still_says_something(rig):
+    rig.llm.replies = ["I really need your help today.", "I really need your help today."]
+    with rig.client().websocket_connect(URL) as ws:
+        answer(ws)
+        say_something(ws)
+        assert ws.receive_json()["type"] == "speech_end"
+        turn = read_turn(ws, 2)
+    assert spoken_text(turn) == "I really need your help today."
+
+
+def test_the_end_marker_still_ends_the_call_when_it_sits_past_the_cut(rig):
+    rig.llm.replies = ["One two three four five. Six seven eight nine ten. Eleven twelve "
+                       "thirteen fourteen. Fifteen sixteen seventeen. Goodbye then. [end call]"]
+    with rig.client().websocket_connect(URL) as ws:
+        assert ws.receive_json()["type"] == "ready"
+        ws.send_json({"type": "answered"})
+        turn = read_turn(ws, 1)
+        ws.send_json({"type": "played", "turn_id": 1})
+        assert ws.receive_json() == {"type": "call_ended", "reason": "completed"}
+    assert "Goodbye" not in spoken_text(turn)

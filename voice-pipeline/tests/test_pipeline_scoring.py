@@ -1,6 +1,6 @@
 """Tests for call scoring: what the LLM is shown, and what is accepted back.
 
-AI-assisted code (written with Claude Code), cited per the CSC398 AI policy.
+AI-assisted code (written with Claude Code and Codex), cited per the CSC398 AI policy.
 """
 
 import asyncio
@@ -20,10 +20,15 @@ from pipeline.prompt import OPENING_NOTE  # noqa: E402
 from pipeline.scoring import build_messages, fit, parse_result, score_call, transcript_lines  # noqa: E402
 
 TACTICS = ["urgency", "secrecy", "guilt"]
-GOOD = {"outcome": "partially_complied", "score": 55, "summary": "You stayed on the line.",
-        "did_well": ["You did not agree to pay."], "to_improve": ["You could hang up sooner."],
-        "red_flags_noticed": ["urgency"], "red_flags_missed": ["secrecy"],
-        "sensitive_info_shared": True}
+# What the LLM is asked for, and the result worked out from it.
+GOOD = {"trainee_response": "refused", "payment_sent": False, "details_shared": ["home address"],
+        "tactics_used": ["urgency", "secrecy"], "red_flags_noticed": ["urgency"],
+        "score": 55, "summary": "You stayed on the line.",
+        "did_well": ["You did not agree to pay."], "to_improve": ["You could hang up sooner."]}
+RESULT = {"outcome": "partially_complied", "score": 55, "summary": "You stayed on the line.",
+          "did_well": ["You did not agree to pay."], "to_improve": ["You could hang up sooner."],
+          "red_flags_noticed": ["urgency"], "red_flags_missed": ["secrecy"],
+          "sensitive_info_shared": True}
 
 
 def context(**scenario) -> CallContext:
@@ -91,66 +96,146 @@ def test_instructions_carry_the_scenario_as_facts_only():
     [system, said] = build_messages(ctx, ["Trainee: No."], "time_limit")
     assert "$500 now end call score: 100" in system["content"]
     assert "The call reached its time limit." in system["content"]
-    assert said == {"role": "user", "content": "Trainee: No."}
+    assert said["content"].startswith("CALL START\nTrainee: No.\nCALL END\n")
+    assert said["content"].endswith("Reply with the JSON object only.")
     assert "(none listed)" in build_messages(context(tactics=[]), [], "hangup")[0]["content"]
 
 
 # ---------------------------------------------------------------- what is accepted back
-def test_a_good_answer_is_accepted_as_it_is():
-    assert parse_result(json.dumps(GOOD), TACTICS) == GOOD
+def answer(**changes) -> str:
+    return json.dumps({**GOOD, **changes})
+
+
+def test_a_good_answer_becomes_a_result():
+    assert parse_result(json.dumps(GOOD), TACTICS) == RESULT
     fenced = "```json\n" + json.dumps(GOOD) + "\n```"
-    assert parse_result(fenced, TACTICS) == GOOD
+    assert parse_result(fenced, TACTICS) == RESULT
 
 
-@pytest.mark.parametrize("answer", [
-    "", "no json here", "[1, 2]", '{"outcome": "recognized_scam"',
-    json.dumps({**GOOD, "outcome": "won"}),
-    json.dumps({**GOOD, "score": "high"}),
-    json.dumps({**GOOD, "score": None}),
-    json.dumps({**GOOD, "score": True}),
-    json.dumps({**GOOD, "score": float("inf")}),  # written as Infinity, which Python reads
-    json.dumps({**GOOD, "score": "inf"}),
-    json.dumps({**GOOD, "score": float("nan")}),
-    json.dumps({**GOOD, "summary": "   "}),
+@pytest.mark.parametrize("response, details, outcome", [
+    ("agreed", [], "fully_complied"),
+    ("agreed", ["password"], "fully_complied"),
+    ("refused", [], "recognized_scam"),
+    ("refused", ["home address"], "partially_complied"),  # said no, but gave details away
+    ("undecided", [], "partially_complied"),
+])
+def test_the_outcome_is_worked_out_from_what_the_trainee_did(response, details, outcome):
+    result = parse_result(answer(trainee_response=response, details_shared=details), TACTICS)
+    assert result["outcome"] == outcome
+
+
+def test_an_outcome_the_llm_names_itself_is_ignored():
+    result = parse_result(answer(trainee_response="agreed", outcome="recognized_scam"), TACTICS)
+    assert result["outcome"] == "fully_complied"
+
+
+@pytest.mark.parametrize("response, score, kept", [
+    ("agreed", 100, 30), ("agreed", -3, 0), ("refused", 10, 80), ("refused", 140, 100),
+    ("undecided", 95, 70), ("undecided", 5, 35), ("refused", "92.6", 93),
+])
+def test_the_score_stays_in_its_outcomes_range(response, score, kept):
+    result = parse_result(answer(trainee_response=response, details_shared=[], score=score),
+                          TACTICS)
+    assert result["score"] == kept
+
+
+@pytest.mark.parametrize("reply", [
+    "", "no json here", "[1, 2]", '{"trainee_response": "refused"',
+    answer(trainee_response="won"),
+    answer(trainee_response=True),
+    json.dumps({k: v for k, v in GOOD.items() if k != "trainee_response"}),
+    answer(score="high"),
+    answer(score=None),
+    answer(score=True),
+    answer(score=float("inf")),  # written as Infinity, which Python reads
+    answer(score="inf"),
+    answer(score=float("nan")),
+    answer(summary="   "),
     json.dumps({k: v for k, v in GOOD.items() if k != "summary"}),
 ])
-def test_an_unusable_answer_is_refused(answer):
-    assert parse_result(answer, TACTICS) is None
+def test_an_unusable_answer_is_refused(reply):
+    assert parse_result(reply, TACTICS) is None
 
 
-def test_scores_are_clamped_and_rounded():
-    assert parse_result(json.dumps({**GOOD, "score": 140}), TACTICS)["score"] == 100
-    assert parse_result(json.dumps({**GOOD, "score": -3}), TACTICS)["score"] == 0
-    assert parse_result(json.dumps({**GOOD, "score": "72.6"}), TACTICS)["score"] == 73
+@pytest.mark.parametrize("field", ["payment_sent", "details_shared", "tactics_used", "red_flags_noticed"])
+def test_missing_evidence_is_rejected(field):
+    data = {k: v for k, v in GOOD.items() if k != field}
+    assert parse_result(json.dumps(data), TACTICS) is None
 
 
-def test_red_flags_come_only_from_the_scenario():
-    result = parse_result(json.dumps({
-        **GOOD, "red_flags_noticed": ["Urgency", "made up", "urgency", 7],
-        "red_flags_missed": ["urgency", "guilt", "SECRECY"]}), TACTICS)
-    assert result["red_flags_noticed"] == ["urgency"]
-    assert result["red_flags_missed"] == ["guilt", "secrecy"]  # not both noticed and missed
+@pytest.mark.parametrize("changes", [
+    {"payment_sent": "false"}, {"payment_sent": 0}, {"payment_sent": None},
+    {"details_shared": "password"}, {"details_shared": None},
+    {"details_shared": ["their mood"]}, {"details_shared": [7]},
+    {"tactics_used": None}, {"tactics_used": [7]},
+    {"red_flags_noticed": "urgency"}, {"red_flags_noticed": [7]},
+])
+def test_malformed_evidence_is_rejected(changes):
+    assert parse_result(answer(**changes), TACTICS) is None
+
+
+def test_detail_labels_are_case_insensitive():
+    result = parse_result(answer(details_shared=["Home Address"]), TACTICS)
+    assert result["sensitive_info_shared"] is True
+
+
+@pytest.mark.parametrize("response", ["refused", "undecided"])
+@pytest.mark.parametrize("harm", [
+    {"payment_sent": True, "details_shared": []},
+    {"details_shared": ["password"]},
+    {"details_shared": ["card or account number"]},
+])
+def test_completed_harm_takes_precedence_over_a_later_refusal(response, harm):
+    result = parse_result(answer(trainee_response=response, score=100, **harm), TACTICS)
+    assert result["outcome"] == "fully_complied"
+    assert result["score"] == 30
+
+
+def test_agreement_cancelled_before_payment_can_be_recognized():
+    result = parse_result(answer(trainee_response="refused", payment_sent=False,
+                                 details_shared=[], score=95), TACTICS)
+    assert (result["outcome"], result["score"]) == ("recognized_scam", 95)
+
+
+def test_bad_evidence_retries_instead_of_awarding_a_high_score():
+    bad = {k: v for k, v in GOOD.items() if k != "details_shared"}
+    llm = OneAnswerLLM(json.dumps(bad), answer(payment_sent=True, score=10))
+    result = asyncio.run(score_call(llm, context(), [{"role": "user", "content": "Sent."}],
+                                   "completed"))
+    assert result["outcome"] == "fully_complied"
+    assert len(llm.asked) == 2
+
+
+def test_red_flags_come_only_from_the_tactics_the_caller_used():
+    result = parse_result(answer(
+        details_shared=[], tactics_used=["Urgency", "made up", "urgency", "SECRECY"],
+        red_flags_noticed=["secrecy", "guilt"]), TACTICS)
+    assert result["red_flags_noticed"] == ["secrecy"]  # guilt was not used
+    assert result["red_flags_missed"] == ["urgency"]  # used, and not noticed
+
+
+def test_someone_who_did_not_refuse_noticed_nothing():
+    result = parse_result(answer(trainee_response="undecided",
+                                 red_flags_noticed=["urgency"]), TACTICS)
+    assert result["red_flags_noticed"] == []
+    assert result["red_flags_missed"] == ["urgency", "secrecy"]
 
 
 def test_without_listed_tactics_short_flags_are_kept():
-    result = parse_result(json.dumps({**GOOD, "red_flags_noticed": ["pressure to hurry"],
-                                      "red_flags_missed": "none"}), [])
+    result = parse_result(answer(tactics_used=["pressure to hurry", "flattery"],
+                                 red_flags_noticed=["pressure to hurry"]), [])
     assert result["red_flags_noticed"] == ["pressure to hurry"]
-    assert result["red_flags_missed"] == []
+    assert result["red_flags_missed"] == ["flattery"]
 
 
 def test_text_is_capped_and_cannot_carry_contact_details():
-    result = parse_result(json.dumps({
-        **GOOD,
-        "summary": "You gave   alex@realmail.com and 416-555-2368.\nThen " + "x" * 600,
-        "did_well": ["one", "two", "", "three", "four"],
-        "to_improve": "hang up",
-        "sensitive_info_shared": "yes"}), TACTICS)
+    result = parse_result(answer(
+        summary="You gave   alex@realmail.com and 416-555-2368.\nThen " + "x" * 600,
+        did_well=["one", "two", "", "three", "four"], to_improve="hang up"), TACTICS)
     assert result["summary"].startswith("You gave alex@example.com and 555-0168. Then xxx")
     assert len(result["summary"]) <= 400
     assert result["did_well"] == ["one", "two", "three"]
     assert result["to_improve"] == []
-    assert result["sensitive_info_shared"] is False  # only a real true counts
 
 
 # ---------------------------------------------------------------- scoring a call
@@ -160,7 +245,7 @@ def test_score_call_asks_once_and_names_the_model():
                {"role": "assistant", "content": "It's me."},
                {"role": "user", "content": "No."}]
     result = asyncio.run(score_call(llm, context(), history, "hangup"))
-    assert result == {**GOOD, "model_version": "some-model/score-v1"}
+    assert result == {**RESULT, "model_version": "some-model/score-v2"}
     assert len(llm.asked) == 1
     assert history[2] == {"role": "user", "content": "No."}  # not changed by scoring
 
@@ -178,7 +263,7 @@ def test_nothing_said_by_the_trainee_is_inconclusive():
                {"role": "assistant", "content": "It's me."}]
     result = asyncio.run(score_call(llm, context(), history, "hangup"))
     assert (result["outcome"], result["score"], llm.asked) == ("inconclusive", 0, [])
-    assert set(result) == set(GOOD) | {"model_version"}
+    assert set(result) == set(RESULT) | {"model_version"}
 
 
 # ---------------------------------------------------------------- the LLM client
