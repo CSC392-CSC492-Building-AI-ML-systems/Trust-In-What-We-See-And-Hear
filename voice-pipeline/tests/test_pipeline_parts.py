@@ -98,7 +98,7 @@ def test_backend_calls_claim_with_the_secret_and_the_token():
     assert (setup.voice, setup.max_duration_seconds) == ("https://storage.example/v.wav?sig=1", 180)
 
 
-@pytest.mark.parametrize("status", [403, 404])
+@pytest.mark.parametrize("status", [403, 404, 422])
 def test_backend_calls_refuse_a_token_the_backend_refuses(status):
     calls = BackendCalls("https://api.example", "s", served_by(lambda r: httpx.Response(status)))
     assert asyncio.run(calls.claim("call-1", "tok")) is None

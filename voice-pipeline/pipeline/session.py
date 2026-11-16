@@ -449,6 +449,8 @@ def create_app(models: Models, calls: Any, settings: Settings) -> FastAPI:
             if report.result is None or report.ended_by == "error":
                 return {"id": call_id, "status": "failed", "summary": None}
             summary = {k: v for k, v in report.result.items() if k != "model_version"}
+            if summary.get("outcome") == "inconclusive":
+                summary["score"] = None  # as the backend serves it
             return {"id": call_id, "status": "completed",
                     "summary": {**summary, "duration_seconds": report.duration_seconds}}
 

@@ -605,7 +605,9 @@ def test_a_call_where_the_user_said_nothing_is_inconclusive_without_the_llm(rig)
             ws.send_json({"type": "hangup"})
             assert ws.receive_json()["type"] == "call_ended"
     assert rig.llm.graded == []
-    assert rig.client().get(RESULT).json()["summary"]["outcome"] == "inconclusive"
+    summary = rig.client().get(RESULT).json()["summary"]
+    assert (summary["outcome"], summary["score"]) == ("inconclusive", None)
+    assert rig.calls.reports["call-1"].result["score"] == 0  # what the backend is sent
 
 
 def test_a_client_that_vanishes_still_gets_a_result(rig):

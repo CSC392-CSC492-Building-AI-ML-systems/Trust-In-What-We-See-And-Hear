@@ -154,7 +154,8 @@ class BackendCalls:
                 headers={"Authorization": f"Bearer {self.secret}"})
         except httpx.HTTPError as e:
             raise CallsUnavailable("the backend could not be reached") from e
-        if response.status_code in (403, 404):
+        # 422: the call ID is not one the backend could have made (not a UUID).
+        if response.status_code in (403, 404, 422):
             return None
         if response.status_code != 200:
             raise CallsUnavailable(f"the backend answered {response.status_code}")
@@ -199,7 +200,8 @@ async def fetch_voice(source: str, client: httpx.AsyncClient | None = None) -> t
         if not source or not path.is_file():
             raise VoiceError("voice recording not found")
         return path, False
-    if not source.startswith("https://"):
+    # Plain http only for a backend on this machine (local Supabase).
+    if not source.startswith(("https://", "http://localhost:", "http://127.0.0.1:")):
         raise VoiceError("voice link must be https")
     own_client = client is None
     client = client or httpx.AsyncClient(timeout=20)

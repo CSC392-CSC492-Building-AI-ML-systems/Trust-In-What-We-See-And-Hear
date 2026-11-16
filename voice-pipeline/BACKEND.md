@@ -73,7 +73,8 @@ to `in_progress` with `started_at`, and answers:
   (example: `sample_call_context.json`).
 - `voice_url`: a signed Supabase Storage link to the persona's
   `voices.sample_storage_path`, valid for at least 60 seconds. It must be
-  `https` and a WAV of at most 25 MB (the upload endpoint already makes mono
+  `https` (plain `http` is accepted only from `localhost`, for a local
+  Supabase) and a WAV of at most 25 MB (the upload endpoint already makes mono
   WAV). The pipeline downloads it once, deletes its copy when the voice is
   ready, and keeps nothing after the call.
 - `max_duration_seconds`: from the scenario. It must be more than 0, or the
@@ -85,7 +86,7 @@ Answers the pipeline understands:
 |---|---|---|
 | 200 | the call may start | `ready` |
 | 403 | token wrong, expired or already used | socket closed, code `4401` |
-| 404 | no such call | socket closed, code `4401` |
+| 404, 422 | no such call, or the ID is not a UUID | socket closed, code `4401` |
 | anything else, or no answer in 10 s | backend problem | `error` `setup_failed`, then `call_ended` |
 
 If the pipeline has no free line it says `busy` without claiming, so the
@@ -127,7 +128,8 @@ same result twice.
 - `result` matches the `call_results` table column for column. It is `null`
   when the call could not be scored, or never started.
 - A call where the user said nothing is `inconclusive` with a `score` of 0.
-  The score means nothing for that outcome and should not be shown.
+  The score means nothing for that outcome, so the backend serves it as
+  `null`.
 - `red_flags_noticed` and `red_flags_missed` only contain values from the
   scenario's `tactics`, when it has any.
 - The backend stores the result, sets `ended_at` and `duration_seconds`, and

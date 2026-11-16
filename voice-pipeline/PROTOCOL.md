@@ -161,8 +161,8 @@ ones in the database's `call_results` table (proposed in
   will be no result. `summary` is `null` until `completed`.
 - `outcome`: `recognized_scam`, `partially_complied`, `fully_complied`, or
   `inconclusive` (the call was too short to judge).
-- `score`: 0 to 100, higher means the user handled the call better. Do not
-  show it for `inconclusive`, where it is always 0.
+- `score`: 0 to 100, higher means the user handled the call better. It is
+  `null` for `inconclusive`, where a score would mean nothing.
 - An unknown call ID gets a 404.
 
 In the mock, the result is picked by how many times the user spoke (0, 1 or
