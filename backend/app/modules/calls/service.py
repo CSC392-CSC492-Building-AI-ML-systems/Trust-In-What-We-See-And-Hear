@@ -29,6 +29,8 @@ from app.core.config import Settings
 from app.integrations.supabase import SupabaseDatabase
 from app.modules.calls.context import CallContext, CallContextValidationError
 from app.modules.calls.schemas import CallResponse, CallSummary
+from app.modules.consents.service import CONSENT_COLUMNS
+from app.modules.friends.service import own_notes
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +42,14 @@ CALL_COLUMNS = (
     "id,consent_id,scenario_id,persona_name,scenario_title,status,created_at,"
     f"started_at,ended_at,duration_seconds,failure_reason,result:call_results({RESULT_COLUMNS})"
 )
+
+CALL_CONSENT_COLUMNS = (
+    f"{CONSENT_COLUMNS},"
+    # For the target's note about the persona (requester_id is the target).
+    "friendship:friendships(requester_id,requester_notes,addressee_notes)"
+)
+# Shown to the caller as "- <key>: <note>"; at most 30 characters.
+TARGET_NOTES_KEY = "What they know about you"
 
 # Values of calls.failure_reason.
 TIMED_OUT = "timed_out"  # token never claimed in time, or no result arrived
@@ -83,10 +93,12 @@ def full_name(user: dict[str, Any]) -> str:
 def build_context(
     consent: dict[str, Any], scenario: dict[str, Any]
 ) -> CallContext:
-    """The validated call context for a consent row (CONSENT_COLUMNS) and scenario row.
+    """The validated call context for a consent row (CALL_CONSENT_COLUMNS) and scenario row.
 
-    `details` stays empty: whose onboarding answers may be used is not decided
-    (FOLLOW_UPS.md), so no personal facts reach the agent yet.
+    `details` holds only the target's own note about the persona (friends'
+    notes), so the caller knows what the target knows about them. The note is
+    written by the person being called, never by the persona. Onboarding
+    answers are not used: whose may be used is not decided (FOLLOW_UPS.md).
     """
     if not scenario.get("ask"):
         raise CallContextError(
@@ -94,6 +106,12 @@ def build_context(
             "This scenario has no request for the caller to make. Add one, then try again.",
         )
     target = consent["requester"]
+    details = {}
+    friendship = consent.get("friendship")
+    if isinstance(friendship, dict):
+        note = own_notes(friendship, consent["requester_id"])
+        if note:
+            details[TARGET_NOTES_KEY] = note
     data = {
         "persona": {"name": full_name(consent["consenter"]), "relationship": "friend"},
         "target": {"name": full_name(target), "called_as": target["first_name"]},
@@ -103,6 +121,7 @@ def build_context(
             "ask": scenario["ask"],
             "tactics": scenario["red_flags"],
         },
+        "details": details,
     }
     try:
         context, warnings = CallContext.from_dict(data)

@@ -14,7 +14,7 @@ the database itself. Example input: `sample_call_context.json`.
 | scenario.situation | `scam_scenarios.description` | required |
 | scenario.ask | `scam_scenarios.ask` | required |
 | scenario.tactics | `scam_scenarios.red_flags` | empty list |
-| details | `users.onboarding_answers` (**TBD**: whose) | empty dict |
+| details | The target's own note about the persona (`friendships`); onboarding answers **TBD** | empty dict |
 
 `CallContext.from_dict` returns (context, warnings) on success. Invalid core
 fields raise `CallContextValidationError`, with structured `errors` and

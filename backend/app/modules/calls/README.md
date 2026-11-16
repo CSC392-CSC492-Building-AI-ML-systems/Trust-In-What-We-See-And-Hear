@@ -128,8 +128,10 @@ its own safeguards before generating speech.
 
 `scenario.ask` comes from `scam_scenarios.ask` (migration 0005). Scenarios
 created before that column have no ask, and `POST /calls` refuses them with
-`scenario_incomplete`; there is no fallback money request. Whose onboarding
-answers populate `details` is still undecided, so `details` is empty. See
+`scenario_incomplete`; there is no fallback money request. `details` holds only the
+target's own private note about the persona (`PUT /friends/{user_id}/notes`),
+under the key `What they know about you`; the persona's notes are never used.
+Whose onboarding answers may also populate `details` is still undecided. See
 [FOLLOW_UPS.md](FOLLOW_UPS.md).
 
 AI-assisted documentation (Codex), cited per the CSC398 AI policy.

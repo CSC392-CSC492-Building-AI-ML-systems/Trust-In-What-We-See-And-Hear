@@ -149,6 +149,10 @@ One row per pair of users, whichever of them sent the request.
 - `sendFriendRequest` inserts a `pending` row.
 - `acceptFriendRequest` sets it to `accepted`, which puts each user on the other's friends list.
 - `declineFriendRequest` and `removeFriend` delete the row, so the users can send a new request later.
+- `updateFriendNotes` sets the current user's own private note about the friend (migration 0005).
+  The row is shared, so each side has its own column, and clients cannot read either note column
+  directly (column privileges); only the backend returns a user's own note. A user's note about a
+  friend goes into the call context when that user starts a call with the friend's voice.
 
 ```sql
 create table public.friendships (
@@ -158,6 +162,8 @@ create table public.friendships (
   status        friendship_status not null default 'pending',
   created_at    timestamptz not null default now(),
   accepted_at   timestamptz,
+  requester_notes text check (char_length(requester_notes) <= 100),  -- requester's note about addressee (0005)
+  addressee_notes text check (char_length(addressee_notes) <= 100),  -- addressee's note about requester (0005)
   check (requester_id <> addressee_id)
 );
 
@@ -450,11 +456,12 @@ the frontend calls Supabase Auth directly, which writes `auth.users`.
 | `POST declineFriendRequest` | `friendships` | `friendships` (deletes row; addressee only) |
 | `GET getFriendsList` | `friendships`, `users` (safe fields) | – |
 | `DEL removeFriend` | `friendships` | `friendships` (deletes row) |
+| `PUT updateFriendNotes` | `friendships` | `friendships` (the current user's own notes column) |
 | `POST RequestConsent` | `friendships`, `voices` | `scam_consents` |
 | `POST AcceptConsent` | `scam_consents`, `friendships` | `scam_consents` (consenter only; sets `expires_at`) |
 | `POST DeclineConsent` | `scam_consents` | `scam_consents` (consenter only) |
 | `GET getConsents` | `scam_consents`, `users` (safe fields) | – |
-| `POST StartCall` | `scam_scenarios`, `scam_consents`, `users` (names), `voices` | `scam_consents` (`used_at`), `calls` |
+| `POST StartCall` | `scam_scenarios`, `scam_consents`, `users` (names), `voices`, `friendships` (the user's note) | `scam_consents` (`used_at`), `calls` |
 | `GET GetCallHistory` | `calls`, `call_results` (score/outcome) | `calls` (fails stale calls) |
 | `GET GetCallDetails` | `calls`, `call_results` | `calls` (fails stale calls) |
 | `PUT uploadVoiceSample` | `voices` | Storage, `voices` |

@@ -73,7 +73,12 @@ def scenario(**changes):
     }
 
 
-def consent():
+MY_NOTE = "We met at UofT. Calls me Bo."
+
+
+def consent(notes=None):
+    """`notes` maps a user ID to that user's own note about the other."""
+    notes = notes or {}
     return {
         "id": str(CONSENT_ID),
         "status": "accepted",
@@ -85,6 +90,12 @@ def consent():
         "consenter_id": str(FRIEND),
         "requester": user_row(ME, "alex_morgan"),
         "consenter": {**user_row(FRIEND, "sam_lee", True), "voice": {"status": "ready"}},
+        # The friend sent the friend request, so ME is the addressee.
+        "friendship": {
+            "requester_id": str(FRIEND),
+            "requester_notes": notes.get(FRIEND),
+            "addressee_notes": notes.get(ME),
+        },
     }
 
 
@@ -118,10 +129,10 @@ RESULT = {
 }
 
 
-def expect_call_start(db, scenario_row=None):
+def expect_call_start(db, scenario_row=None, consent_row=None):
     """Queue the queries of a successful POST /calls."""
     db.on("GET", "scam_scenarios", rows(scenario_row or scenario()))
-    db.on("GET", "scam_consents", rows(consent()))  # read before anything is used
+    db.on("GET", "scam_consents", rows(consent_row or consent()))  # read before anything is used
     db.on("GET", "scam_consents", rows({"id": str(CONSENT_ID), "consenter_id": str(FRIEND)}))
     db.on("GET", "voices", rows({"status": "ready"}))
     db.on("PATCH", "scam_consents", rows(consent()))
@@ -176,6 +187,19 @@ def test_start_call(api, db):
     assert used.url.params["requester_id"] == f"eq.{ME}"
     assert body(used) == {"used_at": "now"}
     assert db.sent("GET", "scam_scenarios")[0].url.params["id"] == f"eq.{SCENARIO_ID}"
+
+
+def test_start_call_gives_the_caller_only_the_users_own_note(api, db):
+    # The friend's note about the user must never reach the caller.
+    expect_call_start(db, consent_row=consent({ME: MY_NOTE, FRIEND: "Sam's private note."}))
+    response = api.post(
+        "/api/v1/calls", json={"consent_id": str(CONSENT_ID), "scenario_id": str(SCENARIO_ID)}
+    )
+    assert response.status_code == 202
+    assert body(db.sent("POST", "calls")[0])["call_context"]["details"] == {
+        "What they know about you": MY_NOTE
+    }
+    assert "friendship:friendships(" in db.sent("GET", "scam_consents")[0].url.params["select"]
 
 
 def test_start_call_without_pipeline_is_503(api, db, application):

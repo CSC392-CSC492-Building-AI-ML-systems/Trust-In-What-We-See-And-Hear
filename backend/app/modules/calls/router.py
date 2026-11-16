@@ -23,6 +23,7 @@ from app.modules.calls.schemas import (
 )
 from app.modules.calls.service import (
     CALL_COLUMNS,
+    CALL_CONSENT_COLUMNS,
     CallContextError,
     build_context,
     call_fields,
@@ -34,7 +35,6 @@ from app.modules.calls.service import (
     to_summary,
 )
 from app.modules.consents.service import (
-    CONSENT_COLUMNS,
     ConsentNotUsableError,
     usable_filters,
     use_consent,
@@ -108,7 +108,7 @@ async def start_call(
     consents = await supabase_db.select(
         "scam_consents",
         {"id": f"eq.{payload.consent_id}", **usable_filters(user.user_id)},
-        CONSENT_COLUMNS,
+        CALL_CONSENT_COLUMNS,
     )
     if not consents:
         api_error(status.HTTP_409_CONFLICT, *CONSENT_UNUSABLE)
