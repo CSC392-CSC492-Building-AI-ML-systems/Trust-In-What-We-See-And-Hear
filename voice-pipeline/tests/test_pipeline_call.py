@@ -210,6 +210,49 @@ def test_a_call_that_cannot_be_set_up_ends_with_an_error(rig, tmp_path, problem)
     assert closed.value.code == 1000
 
 
+@pytest.mark.parametrize("limit", [0, -5, float("nan"), float("inf")])
+def test_a_time_limit_that_is_not_a_positive_number_fails_the_setup(rig, limit):
+    rig.calls.max_duration_seconds = limit
+    with rig.client() as client:
+        with client.websocket_connect(URL) as ws:
+            assert ws.receive_json()["code"] == "setup_failed"
+            assert ws.receive_json() == {"type": "call_ended", "reason": "error"}
+    assert rig.calls.reports["call-1"].ended_by == "error"
+
+
+@pytest.mark.parametrize("content", [None, "{not json"])
+def test_an_unreadable_dev_context_fails_the_setup_and_marks_no_call(rig, tmp_path, content):
+    rig.calls.context_path = tmp_path / "context.json"
+    if content is not None:
+        rig.calls.context_path.write_text(content)
+    with rig.client() as client:
+        with client.websocket_connect(URL) as ws:
+            assert ws.receive_json()["code"] == "setup_failed"
+            assert ws.receive_json() == {"type": "call_ended", "reason": "error"}
+    assert "call-1" not in rig.calls.reports  # not left as in progress
+
+
+def test_a_client_that_never_answers_loses_its_line(rig):
+    rig.settings = Settings(answer_timeout_seconds=0.2)
+    with rig.client() as client:
+        with client.websocket_connect(URL) as ws:
+            assert ws.receive_json()["type"] == "ready"
+            ws.send_json({"type": "ping"})  # talking to the server does not count
+            assert ws.receive_json() == {"type": "pong"}
+            assert ws.receive_json() == {"type": "call_ended", "reason": "time_limit"}
+        with client.websocket_connect("/ws/calls/call-2?token=secret") as ws:
+            assert ws.receive_json()["type"] == "ready"  # the line is free again
+
+
+def test_an_answered_call_is_not_cut_by_the_answer_timeout(rig):
+    rig.settings = Settings(played_grace_seconds=0.05, answer_timeout_seconds=0.2)
+    with rig.client().websocket_connect(URL) as ws:
+        answer(ws)
+        time.sleep(0.4)
+        ws.send_json({"type": "ping"})
+        assert ws.receive_json() == {"type": "pong"}
+
+
 def test_calls_beyond_the_limit_are_told_the_lines_are_busy(rig):
     rig.settings = Settings(max_calls=1)
     client = rig.client()
@@ -331,6 +374,23 @@ def test_noise_gets_an_in_character_request_to_repeat(rig):
     assert turn[0] == {"type": "transcript", "turn_id": 2, "text": ""}
     assert spoken_text(turn) == "Alex? Sorry, the line's really bad. What did you say?"
     assert len(rig.llm.seen) == 1  # only the opening; the LLM never saw the noise
+
+
+def test_the_llm_never_gets_two_messages_in_a_row_from_one_side(rig):
+    rig.stt.results = [Heard("Thank you.", False, "likely hallucination"),
+                       Heard("Who is this?", True)]
+    with rig.client().websocket_connect(URL) as ws:
+        answer(ws)
+        for turn_id in (2, 3):
+            say_something(ws)
+            assert ws.receive_json()["type"] == "speech_end"
+            read_turn(ws, turn_id)
+            ws.send_json({"type": "played", "turn_id": turn_id})
+    seen = rig.llm.seen[-1]
+    assert [m["role"] for m in seen] == ["system", "user", "assistant", "user"]
+    # The opening line and the request to repeat, joined into one message.
+    assert seen[2]["content"].endswith("Sorry, the line's really bad. What did you say?")
+    assert seen[2]["content"].startswith("I really need your help")
 
 
 def test_replies_are_cleaned_before_they_are_spoken_or_remembered(rig):

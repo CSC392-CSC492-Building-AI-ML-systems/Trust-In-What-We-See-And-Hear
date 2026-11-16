@@ -76,7 +76,8 @@ to `in_progress` with `started_at`, and answers:
   `https` and a WAV of at most 25 MB (the upload endpoint already makes mono
   WAV). The pipeline downloads it once, deletes its copy when the voice is
   ready, and keeps nothing after the call.
-- `max_duration_seconds`: from the scenario. The pipeline caps it at 600.
+- `max_duration_seconds`: from the scenario. It must be more than 0, or the
+  call fails to set up. The pipeline caps it at 600.
 
 Answers the pipeline understands:
 

@@ -13,10 +13,13 @@ AI-assisted code (written with Claude Code), cited per the CSC398 AI policy.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from typing import AsyncIterator
 
 import httpx
+
+log = logging.getLogger("pipeline.llm")
 
 
 class ChatLLM:
@@ -69,8 +72,14 @@ class ChatLLM:
                 "response_format": {"type": "json_object"}}
         response = await self.client.post(self.url, json=body)
         if response.status_code == 400:
-            # A server that does not know response_format. The prompt asks
-            # for JSON as well, and the caller checks the answer either way.
+            # Most likely a server that does not know response_format. The
+            # prompt asks for JSON as well, and the caller checks the answer
+            # either way. Servers word this error differently, so any 400 is
+            # tried again once; a 400 comes back at once, so it costs little.
+            # The error's text is not logged: it can quote the conversation.
+            log.warning("the LLM refused the scoring request (400, names "
+                        "response_format: %s); trying without response_format",
+                        "response_format" in response.text)
             del body["response_format"]
             response = await self.client.post(self.url, json=body)
         response.raise_for_status()

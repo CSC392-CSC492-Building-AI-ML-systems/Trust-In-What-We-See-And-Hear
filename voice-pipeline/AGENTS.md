@@ -28,7 +28,9 @@ uv run pytest ../voice-pipeline/tests
 ```
 
 Run them after every change. The backend's own tests are `uv run pytest`
-in `backend/`.
+in `backend/`. `tests/test_pipeline_segmenter.py` needs torch and silero-vad,
+so it is skipped in the backend's environment. Run it where
+`requirements.txt` is installed when you change `segmenter.py`.
 
 ## Rules that must hold
 

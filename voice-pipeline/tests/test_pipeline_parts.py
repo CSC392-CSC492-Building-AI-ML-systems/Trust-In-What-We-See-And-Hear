@@ -63,6 +63,14 @@ def test_llm_error_status_raises():
 
 
 # ---------------------------------------------------------------- call setup
+def test_backend_calls_know_how_long_reporting_can_take():
+    calls = BackendCalls("https://api.example", "s3cret", report_retry_seconds=(1.0, 4.0))
+    assert calls.report_budget_seconds == 3 * BackendCalls.TIMEOUT + 5.0
+    assert not calls.client.is_closed  # one client, kept for every request
+    asyncio.run(calls.aclose())
+    assert calls.client.is_closed
+
+
 def test_dev_calls_hand_out_the_sample_context_for_the_right_token(tmp_path):
     calls = DevCalls("secret", "voice.wav", max_duration_seconds=120)
     assert asyncio.run(calls.claim("call-1", "nope")) is None
@@ -146,6 +154,39 @@ def test_wav_seconds(tmp_path):
     path.write_bytes(b"not audio")
     with pytest.raises(VoiceError):
         wav_seconds(path)
+
+
+def riff(*chunks: tuple[bytes, bytes, int | None]) -> bytes:
+    """A WAV file from (name, content, length to claim or None for the true one)."""
+    body = b"WAVE"
+    for name, content, claimed in chunks:
+        length = len(content) if claimed is None else claimed
+        body += name + length.to_bytes(4, "little") + content + bytes(len(content) % 2)
+    return b"RIFF" + len(body).to_bytes(4, "little") + body
+
+
+def fmt(tag: int, rate: int, bytes_per_sample: int, extra: bytes = b"") -> bytes:
+    numbers = (tag, 1, rate, rate * bytes_per_sample, bytes_per_sample, 8 * bytes_per_sample)
+    return b"".join(n.to_bytes(size, "little")
+                    for n, size in zip(numbers, (2, 2, 4, 4, 2, 2))) + extra
+
+
+def test_wav_seconds_reads_formats_the_wave_module_refuses(tmp_path):
+    path = tmp_path / "v.wav"
+    # "Extensible" 16-bit audio, as audio tools often write it.
+    extensible = fmt(0xFFFE, 24000, 2, (22).to_bytes(2, "little") + bytes(22))
+    path.write_bytes(riff((b"fmt ", extensible, None), (b"data", bytes(72000), None)))
+    assert wav_seconds(path) == 1.5
+    # 32-bit float, after a chunk of odd length, written as a stream (so the
+    # length it claims is not real).
+    path.write_bytes(riff((b"fmt ", fmt(3, 16000, 4), None), (b"LIST", b"abc", None),
+                          (b"data", bytes(32000), 0xFFFFFFFF)))
+    assert wav_seconds(path) == 0.5
+    path.write_bytes(riff((b"data", bytes(100), None)))  # no format chunk
+    with pytest.raises(VoiceError):
+        wav_seconds(path)
+    with pytest.raises(VoiceError):
+        wav_seconds(tmp_path / "missing.wav")
 
 
 # ---------------------------------------------------------------- GPU sharing

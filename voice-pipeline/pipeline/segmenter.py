@@ -59,6 +59,7 @@ class VADSegmenter:
     def reset(self) -> None:
         """Forget everything (e.g. while the caller is speaking)."""
         self.vad.reset_states()
+        self.vad_origin = 0  # absolute sample index the detector counts from
         self.audio = np.zeros(0, dtype=np.float32)  # all samples since reset
         self.offset = 0  # absolute sample index of self.audio[0]
         self.pending = np.zeros(0, dtype=np.float32)  # < WINDOW samples not yet fed
@@ -74,16 +75,20 @@ class VADSegmenter:
             win, self.pending = self.pending[:WINDOW], self.pending[WINDOW:]
             ev = self.vad(torch.from_numpy(win.copy()))
             if ev and "start" in ev and self.start is None:
-                self.start = max(self.offset, int(ev["start"]) - self.pre_roll)
+                self.start = max(self.offset,
+                                 self.vad_origin + int(ev["start"]) - self.pre_roll)
             if ev and "end" in ev and self.start is not None:
-                utt = self._take(int(ev["end"]))
+                utt = self._take(self.vad_origin + int(ev["end"]))
                 if utt is not None:
                     out.append(utt)
             if self.start is not None:
                 end_now = self.offset + len(self.audio) - len(self.pending)
                 if end_now - self.start >= self.max_len:  # force a cut
                     utt = self._take(end_now)
+                    # The detector counts from zero again after this, so
+                    # remember where its zero is.
                     self.vad.reset_states()
+                    self.vad_origin = end_now
                     if utt is not None:
                         out.append(utt)
         # Keep memory bounded when nobody is talking: hold only the pre-roll.

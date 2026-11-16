@@ -22,6 +22,9 @@ class Settings:
     played_grace_seconds: float = 1.0
     # Messages of the conversation the LLM sees (the rest stays in memory).
     history_messages: int = 20
+    # A client that gets `ready` must send `answered` within this long, or the
+    # call ends. Without it a silent client would hold a line for good.
+    answer_timeout_seconds: float = 60.0
     # Turns that may fail in a row before the call ends with reason "error".
     max_failed_turns: int = 2
     # Longest the LLM may take to score a call after it ends. Past this the

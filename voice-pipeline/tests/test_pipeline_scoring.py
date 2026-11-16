@@ -108,6 +108,9 @@ def test_a_good_answer_is_accepted_as_it_is():
     json.dumps({**GOOD, "score": "high"}),
     json.dumps({**GOOD, "score": None}),
     json.dumps({**GOOD, "score": True}),
+    json.dumps({**GOOD, "score": float("inf")}),  # written as Infinity, which Python reads
+    json.dumps({**GOOD, "score": "inf"}),
+    json.dumps({**GOOD, "score": float("nan")}),
     json.dumps({**GOOD, "summary": "   "}),
     json.dumps({k: v for k, v in GOOD.items() if k != "summary"}),
 ])
@@ -212,6 +215,18 @@ def test_complete_retries_without_response_format_if_the_server_refuses_it():
     down = ChatLLM("http://llm/x", "m", client=served_by(lambda r: httpx.Response(503)))
     with pytest.raises(httpx.HTTPStatusError):
         asyncio.run(down.complete([]))
+
+
+def test_a_refused_scoring_request_is_logged_without_its_text(caplog):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "response_format" in json.loads(request.content):
+            return httpx.Response(400, text="response_format unknown; you said marmalade")
+        return httpx.Response(200, json={"choices": [{"message": {"content": "{}"}}]})
+
+    llm = ChatLLM("http://llm/x", "m", client=served_by(handler))
+    assert asyncio.run(llm.complete([])) == "{}"
+    assert "names response_format: True" in caplog.text
+    assert "marmalade" not in caplog.text
 
 
 # ---------------------------------------------------------------- reporting to the backend

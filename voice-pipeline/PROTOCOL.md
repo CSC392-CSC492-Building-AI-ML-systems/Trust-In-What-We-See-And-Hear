@@ -55,7 +55,9 @@ line is turn 1.
 `call_ended.reason` is one of:
 
 - `hangup`: the client sent `hangup`
-- `time_limit`: the scenario's `max_duration_seconds` ran out
+- `time_limit`: the scenario's `max_duration_seconds` ran out. The real
+  server also sends this if `answered` has not arrived 60 seconds after
+  `ready`, so an unanswered call does not hold a line. The mock waits forever.
 - `completed`: the caller ended the call (the scam reached its end). The
   real server sends this after the client reports the last turn as `played`,
   so the caller's last line is heard. The mock sends it straight away.

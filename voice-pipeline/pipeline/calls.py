@@ -35,7 +35,6 @@ import json
 import logging
 import os
 import tempfile
-import wave
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote
@@ -70,6 +69,7 @@ class CallReport:
 
 class DevCalls:
     KEPT_REPORTS = 50
+    report_budget_seconds = 0.0  # the longest report() can take: it only stores
 
     def __init__(self, token: str, voice: str, context_path: str | Path = SAMPLE_CONTEXT,
                  max_duration_seconds: float = 300.0):
@@ -104,9 +104,13 @@ class DevCalls:
         """The setup for this call, or None if the token is not accepted."""
         if not self.accepts(token):
             return None
+        try:
+            context = json.loads(self.context_path.read_text())
+        except (OSError, ValueError) as e:
+            # Before the call is marked as going on, so it is not left that way.
+            raise CallsUnavailable("the dev context file could not be read") from e
         self._keep(call_id, None)
-        return CallSetup(json.loads(self.context_path.read_text()), self.voice,
-                         self.max_duration_seconds)
+        return CallSetup(context, self.voice, self.max_duration_seconds)
 
 
 class CallsUnavailable(Exception):
@@ -116,12 +120,21 @@ class CallsUnavailable(Exception):
 class BackendCalls:
     """Asks the backend to check the token and hand over the call's setup."""
 
+    TIMEOUT = 10.0  # seconds, per request
+
     def __init__(self, url: str, secret: str, client: httpx.AsyncClient | None = None,
                  report_retry_seconds: tuple[float, ...] = (1.0, 4.0)):
         self.url = url.rstrip("/")
         self.secret = secret
-        self.client = client
+        # One client for the server's life, so calls reuse the connection.
+        self.client = client or httpx.AsyncClient(timeout=self.TIMEOUT)
         self.report_retry_seconds = report_retry_seconds
+        # The longest report() can take: every attempt timing out.
+        self.report_budget_seconds = (
+            (len(report_retry_seconds) + 1) * self.TIMEOUT + sum(report_retry_seconds))
+
+    async def aclose(self) -> None:
+        await self.client.aclose()
 
     @classmethod
     def from_env(cls) -> BackendCalls:
@@ -134,17 +147,13 @@ class BackendCalls:
         The backend accepts a token once, so a call is claimed only when it
         can really start.
         """
-        client = self.client or httpx.AsyncClient(timeout=10)
         try:
-            response = await client.post(
+            response = await self.client.post(
                 f"{self.url}/api/v1/internal/calls/{quote(call_id, safe='')}/claim",
                 json={"token": token},
                 headers={"Authorization": f"Bearer {self.secret}"})
         except httpx.HTTPError as e:
             raise CallsUnavailable("the backend could not be reached") from e
-        finally:
-            if self.client is None:
-                await client.aclose()
         if response.status_code in (403, 404):
             return None
         if response.status_code != 200:
@@ -162,26 +171,21 @@ class BackendCalls:
         The result exists nowhere else, so a backend that stays down loses it.
         """
         url = f"{self.url}/api/v1/internal/calls/{quote(call_id, safe='')}/result"
-        client = self.client or httpx.AsyncClient(timeout=10)
-        try:
-            for delay in (*self.report_retry_seconds, None):
-                try:
-                    response = await client.post(
-                        url, json=report.body(),
-                        headers={"Authorization": f"Bearer {self.secret}"})
-                    if response.status_code < 300:
-                        return
-                    problem = f"the backend answered {response.status_code}"
-                    if response.status_code < 500 and response.status_code != 429:
-                        break  # it understood and refused; asking again will not help
-                except httpx.HTTPError:
-                    problem = "the backend could not be reached"
-                if delay is not None:
-                    await asyncio.sleep(delay)
-            log.error("call %s: result not delivered, %s", call_id, problem)
-        finally:
-            if self.client is None:
-                await client.aclose()
+        for delay in (*self.report_retry_seconds, None):
+            try:
+                response = await self.client.post(
+                    url, json=report.body(),
+                    headers={"Authorization": f"Bearer {self.secret}"})
+                if response.status_code < 300:
+                    return
+                problem = f"the backend answered {response.status_code}"
+                if response.status_code < 500 and response.status_code != 429:
+                    break  # it understood and refused; asking again will not help
+            except httpx.HTTPError:
+                problem = "the backend could not be reached"
+            if delay is not None:
+                await asyncio.sleep(delay)
+        log.error("call %s: result not delivered, %s", call_id, problem)
 
 
 class VoiceError(Exception):
@@ -222,8 +226,32 @@ async def fetch_voice(source: str, client: httpx.AsyncClient | None = None) -> t
 
 
 def wav_seconds(path: Path) -> float:
+    """How long a WAV file plays, from its header.
+
+    Not the `wave` module: on Python 3.11 it refuses formats the voice engine
+    reads fine (extensible and float WAVs, which audio tools often write).
+    """
     try:
-        with wave.open(str(path), "rb") as w:
-            return w.getnframes() / w.getframerate()
-    except (wave.Error, EOFError, ZeroDivisionError) as e:
+        with open(path, "rb") as f:
+            size = os.fstat(f.fileno()).st_size
+            start = f.read(12)
+            byte_rate = 0
+            while start[:4] == b"RIFF" and start[8:] == b"WAVE":
+                head = f.read(8)
+                if len(head) < 8:
+                    break
+                kind, length = head[:4], int.from_bytes(head[4:], "little")
+                if kind == b"fmt ":
+                    byte_rate = int.from_bytes(f.read(length)[8:12], "little")
+                    f.seek(length % 2, 1)
+                elif kind == b"data":
+                    if byte_rate <= 0:
+                        break
+                    # A file written as a stream has no true length here.
+                    left = size - f.tell()
+                    return (length if 0 < length <= left else left) / byte_rate
+                else:
+                    f.seek(length + length % 2, 1)  # chunks are padded to even sizes
+    except OSError as e:
         raise VoiceError("voice recording is not a readable WAV file") from e
+    raise VoiceError("voice recording is not a readable WAV file")

@@ -20,6 +20,7 @@ import base64
 import io
 import json
 import logging
+import math
 import time
 import wave
 from contextlib import aclosing, asynccontextmanager
@@ -155,7 +156,16 @@ class CallSession:
         window = self.history[-self.settings.history_messages:]
         while window and window[0]["role"] != "user":
             window = window[1:]
-        return [{"role": "system", "content": self.system_prompt}, *window]
+        # Two caller lines in a row happen when the caller asks the user to
+        # repeat. Some chat formats need the roles to alternate, so join them.
+        messages = [{"role": "system", "content": self.system_prompt}]
+        for message in window:
+            if message["role"] == messages[-1]["role"]:
+                messages[-1] = {**messages[-1],
+                                "content": messages[-1]["content"] + " " + message["content"]}
+            else:
+                messages.append(message)
+        return messages
 
     async def reply_chunks(self, user_text: str) -> AsyncIterator[str]:
         """Ask the LLM for the caller's reply; yield it in speakable chunks."""
@@ -253,11 +263,16 @@ class CallSession:
                         output_sample_rate=self.models.tts.info.sample_rate,
                         max_duration_seconds=round(self.max_seconds))
         recv = asyncio.create_task(self.ws.receive())
+        # Runs out if the client never answers; the call timer takes over
+        # once it does.
+        unanswered = asyncio.create_task(asyncio.sleep(self.settings.answer_timeout_seconds))
         reason = None
         try:
             while reason is None:
                 tasks = {t for t in (recv, self.timer, self.turn, self.finish)
                          if t is not None}
+                if self.timer is None:
+                    tasks.add(unanswered)
                 done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
                 if self.turn in done:
                     self.turn.result()
@@ -278,8 +293,11 @@ class CallSession:
                         reason = "hangup"
                     else:
                         recv = asyncio.create_task(self.ws.receive())
+                if reason is None and self.timer is None and unanswered.done():
+                    reason = "time_limit"
         finally:
-            tasks = [t for t in (recv, self.timer, self.turn, self.finish) if t is not None]
+            tasks = [t for t in (recv, unanswered, self.timer, self.turn, self.finish)
+                     if t is not None]
             for task in tasks:
                 task.cancel()
             # Let a cancelled turn stop so nothing is sent after call_ended
@@ -341,9 +359,12 @@ async def serve_call(ws: WebSocket, call_id: str, token: str, *, calls: Any,
         ended_by = "error"
         try:
             ctx, warnings = CallContext.from_dict(setup.context)
+            limit = setup.max_duration_seconds
+            if not (math.isfinite(limit) and limit > 0):
+                raise VoiceError("the call's time limit is not a positive number")
             voice = await load_voice(setup.voice, models)
             session = CallSession(ws, call_id, ctx, voice, models, settings,
-                                  min(setup.max_duration_seconds, settings.max_call_seconds))
+                                  min(limit, settings.max_call_seconds))
         except (CallContextValidationError, VoiceError) as e:
             log.error("call %s not started: %s", call_id, e)
             await refuse("setup_failed", "This call could not be set up.")
@@ -402,7 +423,10 @@ def create_app(models: Models, calls: Any, settings: Settings) -> FastAPI:
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
         if finishing:  # let them finish before the server stops
-            await asyncio.wait(set(finishing), timeout=settings.score_timeout_seconds + 30)
+            await asyncio.wait(set(finishing), timeout=(
+                settings.score_timeout_seconds + calls.report_budget_seconds + 5))
+        if hasattr(calls, "aclose"):
+            await calls.aclose()
 
     app = FastAPI(title="Call audio server", lifespan=lifespan)
 

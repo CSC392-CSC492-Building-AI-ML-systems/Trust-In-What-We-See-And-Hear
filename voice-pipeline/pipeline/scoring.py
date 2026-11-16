@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 import time
 from typing import Any
@@ -172,7 +173,8 @@ def parse_result(reply: str, tactics: list[str]) -> dict | None:
             score = float(score)
         except ValueError:
             return None
-    if isinstance(score, bool) or not isinstance(score, (int, float)) or score != score:
+    if isinstance(score, bool) or not isinstance(score, (int, float)) \
+            or not math.isfinite(score):
         return None
     summary = _text(data.get("summary"), 400)
     if not summary:
