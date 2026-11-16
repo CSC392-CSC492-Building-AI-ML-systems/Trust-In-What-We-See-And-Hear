@@ -34,8 +34,8 @@ CONSENT_COLUMNS = (
     f"consenter:users!scam_consents_consenter_id_fkey({PUBLIC_USER_COLUMNS},voice:voices(status))"
 )
 
-# Voice statuses in which the voice can be used in a call. Revisit once the
-# voice pipeline decides what "ready" means for zero-shot cloning.
+# Voice statuses in which the voice can be used in a call. Cloning is zero-shot,
+# so a voice is "ready" as soon as its sample upload is saved.
 USABLE_VOICE_STATUSES = frozenset({"ready"})
 
 # PostgreSQL reads the timestamp `now` as the current time on the database.

@@ -39,9 +39,9 @@ NOT_FOUND_RESPONSES: Responses = {
 SERVICE_UNAVAILABLE_RESPONSES: Responses = {
     status.HTTP_503_SERVICE_UNAVAILABLE: {
         "description": (
-            "Supabase (authentication or the database) is temporarily unavailable: "
-            "not configured, unreachable, rate limiting or returned an unexpected "
-            "response. Says nothing about the token; retry later."
+            "Supabase (authentication, the database or file storage) is temporarily "
+            "unavailable: not configured, unreachable, rate limiting or returned an "
+            "unexpected response. Says nothing about the token; retry later."
         )
     }
 }

@@ -4,9 +4,10 @@ API_DESCRIPTION = """
 Backend API for Trust In What We See And Hear.
 
 **Status:** in progress. Authentication (Supabase Auth),
-the current user's profile (`/api/v1/users/me`), friends, consents and scenarios
-are implemented. Every other `/api/v1` operation currently returns
-`501 Not Implemented` once authenticated.
+the current user's profile (`/api/v1/users/me`) and voice sample
+(`/api/v1/users/me/voice`), friends, consents and scenarios are implemented.
+Every other `/api/v1` operation currently returns `501 Not Implemented` once
+authenticated.
 
 ## Conventions
 
@@ -33,7 +34,7 @@ are implemented. Every other `/api/v1` operation currently returns
 
 1. Sign up or sign in with Supabase Auth, then complete onboarding (which
    creates your profile) and identity verification.
-2. Upload a voice sample to train your voice model.
+2. Record and upload a reference sample of your own voice.
 3. Add friends.
 4. Request consent from a friend to use their profile and voice. Once they
    accept, the consent can be used for one call, until it expires.
@@ -72,8 +73,12 @@ OPENAPI_TAGS = [
         "description": "Simulated scam calls, each based on a consent and a scenario.",
     },
     {
-        "name": "Voice training",
-        "description": "Training a user's voice model from an MP3 sample.",
+        "name": "Voice",
+        "description": (
+            "The current user's voice reference sample. Chatterbox clones the "
+            "voice from it for calls that friends start with the user's consent. "
+            "Samples are stored privately and are never sent back to a client."
+        ),
     },
     {
         "name": "Scenarios",
