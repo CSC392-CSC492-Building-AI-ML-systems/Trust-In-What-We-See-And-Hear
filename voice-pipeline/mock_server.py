@@ -5,7 +5,7 @@ placeholder, and the caller's voice is a tone. It exists so the frontend can
 build the call screen against the real message flow.
 
 Settings (environment variables):
-    MOCK_MAX_SECONDS        call time limit, default 300
+    MOCK_MAX_SECONDS        call time limit in whole seconds, default 300
     MOCK_END_AFTER_TURNS    end with reason "completed" after this many caller
                             turns, default 0 (never)
     MOCK_CHUNK_DELAY        seconds of fake processing before each message,
@@ -13,6 +13,13 @@ Settings (environment variables):
     MOCK_END_SILENCE_MS     silence that ends the user's turn, default 600
     MOCK_SPEECH_RMS         loudness (0 to 32767) that counts as speech,
                             default 500
+    MOCK_RESULT_DELAY       seconds after a call ends before its result is
+                            ready, default 3
+
+It also stands in for two backend endpoints, so the frontend can build the
+whole flow: `POST /api/v1/calls` hands out a call ID and the address to
+connect to, and `GET /api/v1/calls/<call_id>` returns a canned result for
+every call that ends (see PROTOCOL.md).
 
 AI-assisted code (written with Claude Code), cited per the CSC398 AI policy.
 """
@@ -26,18 +33,49 @@ import math
 import os
 import sys
 import time
+import uuid
 import wave
 
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 
 IN_RATE = 16_000  # microphone audio the client sends
 OUT_RATE = 24_000  # caller audio the server sends
-MAX_SECONDS = float(os.environ.get("MOCK_MAX_SECONDS", "300"))
+MAX_SECONDS = int(os.environ.get("MOCK_MAX_SECONDS", "300"))
 END_AFTER_TURNS = int(os.environ.get("MOCK_END_AFTER_TURNS", "0"))
 CHUNK_DELAY = float(os.environ.get("MOCK_CHUNK_DELAY", "0.4"))
 END_SILENCE_MS = int(os.environ.get("MOCK_END_SILENCE_MS", "600"))
 SPEECH_RMS = int(os.environ.get("MOCK_SPEECH_RMS", "500"))
 MIN_SPEECH_MS = 300  # shorter sounds are treated as noise
+RESULT_DELAY = float(os.environ.get("MOCK_RESULT_DELAY", "3"))
+MAX_STORED_CALLS = 200
+
+# Canned results; a call gets one by how many times the user spoke, so a
+# short and a long test call show different screens.
+RESULTS = [
+    {"outcome": "recognized_scam", "score": 85,
+     "summary": "You questioned who was calling and did not agree to send money.",
+     "did_well": ["Asked the caller to prove who they were.",
+                  "Ended the call without agreeing to anything."],
+     "to_improve": ["Hang up and call the person back on a number you know."],
+     "red_flags_noticed": ["urgency"], "red_flags_missed": ["secrecy"],
+     "sensitive_info_shared": False},
+    {"outcome": "partially_complied", "score": 40,
+     "summary": "You gave the caller your email address, but did not agree to pay.",
+     "did_well": ["Did not agree to send money."],
+     "to_improve": ["Say no clearly instead of stalling.",
+                    "Ask a question only the real person could answer."],
+     "red_flags_noticed": [], "red_flags_missed": ["urgency", "emotional appeal"],
+     "sensitive_info_shared": True},
+    {"outcome": "fully_complied", "score": 15,
+     "summary": "You agreed to send money before checking who was calling.",
+     "did_well": [],
+     "to_improve": ["Never send money during the first call.",
+                    "Be suspicious when asked to keep it secret."],
+     "red_flags_noticed": [],
+     "red_flags_missed": ["urgency", "secrecy", "emotional appeal"],
+     "sensitive_info_shared": False},
+]
+calls: dict[str, dict] = {}  # call_id -> what GET /api/v1/calls/<call_id> needs
 
 OPENING = ["Hey, it's me. This is the mock caller.", "Can you hear me okay?"]
 REPLIES = [
@@ -118,6 +156,19 @@ class Call:
         self.timer: asyncio.Task | None = None  # set once the call is answered
         self.wait_played: int | None = None
         self.listen_at = 0.0
+        self.answered_at: float | None = None
+        self.user_turns = 0
+
+    def result(self) -> dict:
+        """The canned call result, in the shape the real pipeline will produce."""
+        seconds = time.monotonic() - self.answered_at if self.answered_at else 0.0
+        return {**RESULTS[self.user_turns % len(RESULTS)],
+                "duration_seconds": round(seconds)}
+
+    def store_result(self) -> None:
+        call = calls.get(self.id)
+        if call is not None and call["ready_at"] is None:
+            call.update(ready_at=time.monotonic() + RESULT_DELAY, summary=self.result())
 
     async def send(self, type: str, **fields) -> None:
         await self.ws.send_text(json.dumps({"type": type, **fields}))
@@ -155,6 +206,7 @@ class Call:
             if self.listening():
                 heard = self.segmenter.feed(frame["bytes"])
                 if heard is not None:
+                    self.user_turns += 1
                     await self.send("speech_end", seconds=round(heard, 2))
                     self.start_turn(REPLIES[(self.turns - 1) % len(REPLIES)], heard)
             return False
@@ -167,6 +219,7 @@ class Call:
             return False
         if kind == "answered":
             if self.timer is None:
+                self.answered_at = time.monotonic()
                 self.timer = asyncio.create_task(asyncio.sleep(MAX_SECONDS))
                 self.start_turn(OPENING)
         elif kind == "played":
@@ -212,6 +265,7 @@ class Call:
         if self.turn is not None:
             # Let the cancelled turn finish so nothing is sent after call_ended.
             await asyncio.gather(self.turn, return_exceptions=True)
+        self.store_result()
         await self.send("call_ended", reason=reason)
         await self.ws.close(code=1000)
 
@@ -225,4 +279,43 @@ async def call_socket(ws: WebSocket, call_id: str, token: str = "") -> None:
     if not token:
         await ws.close(code=4401, reason="missing token")
         return
-    await Call(ws, call_id).run()
+    call = Call(ws, call_id)
+    remember(call_id, "in_progress")
+    try:
+        await call.run()
+    except (WebSocketDisconnect, RuntimeError):
+        pass  # the client left (a page reload, say) while something was being sent
+    finally:
+        call.store_result()  # every call gets a result, even after a plain disconnect
+
+
+def remember(call_id: str, status: str) -> None:
+    calls.pop(call_id, None)
+    calls[call_id] = {"status": status, "ready_at": None, "summary": None}
+    while len(calls) > MAX_STORED_CALLS:
+        del calls[next(iter(calls))]  # oldest first
+
+
+@app.post("/api/v1/calls", status_code=202)
+async def start_call(request: Request) -> dict:
+    """Stand-in for the backend's call start: a new call ID and where to connect.
+
+    The real one needs a login and a body with `consent_id` and `scenario_id`.
+    The mock ignores both.
+    """
+    call_id = str(uuid.uuid4())
+    remember(call_id, "queued")
+    scheme = "wss" if request.url.scheme == "https" else "ws"
+    return {"id": call_id, "status": "queued",
+            "ws_url": f"{scheme}://{request.url.netloc}/ws/calls/{call_id}?token=mock"}
+
+
+@app.get("/api/v1/calls/{call_id}")
+async def call_details(call_id: str) -> dict:
+    """Stand-in for the backend's call details: status, and the result once ready."""
+    call = calls.get(call_id)
+    if call is None:
+        raise HTTPException(status_code=404, detail="Call not found")
+    if call["ready_at"] is None or time.monotonic() < call["ready_at"]:
+        return {"id": call_id, "status": call["status"], "summary": None}
+    return {"id": call_id, "status": "completed", "summary": call["summary"]}

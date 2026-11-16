@@ -1,0 +1,12 @@
+# For the real server (pipeline/), on a GPU machine with Python 3.11.
+# The mock and the tests only need the backend's environment.
+# On RTX 50-series GPUs, also pin torch==2.8.0 and torchaudio==2.8.0.
+# The LLM (vLLM) runs as its own process with its own environment.
+chatterbox-tts
+setuptools<81  # Chatterbox's watermarking needs pkg_resources
+faster-whisper
+silero-vad
+fastapi
+uvicorn[standard]
+httpx
+numpy

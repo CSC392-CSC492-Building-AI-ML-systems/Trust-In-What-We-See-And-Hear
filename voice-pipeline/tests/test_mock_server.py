@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 from starlette.testclient import TestClient
-from starlette.websockets import WebSocketDisconnect
+from starlette.websockets import WebSocket, WebSocketDisconnect
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 import mock_server  # noqa: E402
@@ -28,6 +28,7 @@ def fast(monkeypatch):
     monkeypatch.setattr(mock_server, "CHUNK_DELAY", 0)
     monkeypatch.setattr(mock_server, "MAX_SECONDS", 60)
     monkeypatch.setattr(mock_server, "END_AFTER_TURNS", 0)
+    mock_server.calls.clear()
 
 
 @pytest.fixture
@@ -193,3 +194,99 @@ def test_bad_messages_report_an_error_and_the_call_continues(client, send):
         assert ws.receive_json()["type"] == "error"
         ws.send_json({"type": "ping"})
         assert ws.receive_json() == {"type": "pong"}
+
+
+@pytest.mark.parametrize("error", [WebSocketDisconnect(1006), RuntimeError("socket is closed")])
+def test_a_client_that_leaves_mid_turn_is_not_an_error(client, monkeypatch, error):
+    # A page reload during a call: a real server's next send fails. That must
+    # not escape as an exception (uvicorn would log a traceback).
+    gone = []
+    send_text = WebSocket.send_text
+
+    async def send_unless_gone(self, data):
+        if gone:
+            raise error
+        await send_text(self, data)
+
+    monkeypatch.setattr(WebSocket, "send_text", send_unless_gone)
+    monkeypatch.setattr(mock_server, "CHUNK_DELAY", 0.05)
+    with client.websocket_connect(URL) as ws:
+        assert ws.receive_json()["type"] == "ready"
+        ws.send_json({"type": "answered"})
+        assert ws.receive_json()["type"] == "audio"  # more of turn 1 is still to come
+        gone.append(True)
+        time.sleep(0.2)  # the next piece fails to send
+    assert client.get(RESULT).status_code == 200
+
+
+# ---------------------------------------------------------------- call results
+RESULT = "/api/v1/calls/call-1"
+
+
+def test_unknown_call_has_no_result(client):
+    assert client.get("/api/v1/calls/nobody").status_code == 404
+
+
+def test_a_started_call_is_queued_and_says_where_to_connect(client):
+    body = client.post("/api/v1/calls", json={"consent_id": "x", "scenario_id": "y"})
+    assert body.status_code == 202
+    call = body.json()
+    assert call["status"] == "queued"
+    details = f"/api/v1/calls/{call['id']}"
+    assert client.get(details).json() == {"id": call["id"], "status": "queued", "summary": None}
+    path = call["ws_url"].split("//", 1)[1].split("/", 1)[1]
+    assert call["ws_url"].startswith("ws://") and call["id"] in path
+    with client.websocket_connect("/" + path) as ws:
+        assert ws.receive_json()["call_id"] == call["id"]
+        assert client.get(details).json()["status"] == "in_progress"
+
+
+def test_result_is_in_progress_until_it_is_completed(client, monkeypatch):
+    monkeypatch.setattr(mock_server, "RESULT_DELAY", 60)
+    waiting = {"id": "call-1", "status": "in_progress", "summary": None}
+    with client.websocket_connect(URL) as ws:
+        answer(ws)
+        assert client.get(RESULT).json() == waiting
+        ws.send_json({"type": "hangup"})
+        assert ws.receive_json()["type"] == "call_ended"
+        assert client.get(RESULT).json() == waiting
+    monkeypatch.setattr(mock_server, "time", SimpleNamespace(monotonic=lambda: time.monotonic() + 61))
+    body = client.get(RESULT).json()
+    assert body["status"] == "completed"
+    assert set(body["summary"]) == {
+        "outcome", "score", "summary", "did_well", "to_improve", "red_flags_noticed",
+        "red_flags_missed", "sensitive_info_shared", "duration_seconds"}
+    assert body["summary"]["outcome"] == "recognized_scam"
+
+
+def test_result_depends_on_how_often_the_user_spoke(client, monkeypatch):
+    monkeypatch.setattr(mock_server, "RESULT_DELAY", 0)
+    with client.websocket_connect(URL) as ws:
+        answer(ws)
+        ws.send_json({"type": "played", "turn_id": 1})
+        send_audio(ws, pcm(1.0, 8000) + pcm(0.7, 0))
+        assert ws.receive_json()["type"] == "speech_end"
+        ws.send_json({"type": "hangup"})
+        while ws.receive_json()["type"] != "call_ended":
+            pass
+    summary = client.get(RESULT).json()["summary"]
+    assert summary["outcome"] == "partially_complied"
+    assert 0 <= summary["score"] <= 100
+
+
+def test_a_call_that_just_disconnects_still_gets_a_result(client, monkeypatch):
+    monkeypatch.setattr(mock_server, "RESULT_DELAY", 0)
+    with client.websocket_connect(URL) as ws:
+        answer(ws)
+    body = client.get(RESULT).json()
+    assert body["status"] == "completed"
+    assert body["summary"]["score"] == 85
+
+
+def test_only_the_newest_calls_are_kept(client, monkeypatch):
+    monkeypatch.setattr(mock_server, "MAX_STORED_CALLS", 2)
+    for name in ("a", "b", "c"):
+        with client.websocket_connect(f"/ws/calls/{name}?token=dev") as ws:
+            assert ws.receive_json()["type"] == "ready"
+    assert client.get("/api/v1/calls/a").status_code == 404
+    assert client.get("/api/v1/calls/c").status_code == 200
