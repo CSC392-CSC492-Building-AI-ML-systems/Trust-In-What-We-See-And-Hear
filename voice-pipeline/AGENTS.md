@@ -77,19 +77,33 @@ so it is skipped in the backend's environment. Run it where
   call results and `BACKEND.md`. `main`'s `BACKEND.md`, `PROTOCOL.md` and
   `README.md` differ from this branch's only where they mention `pipeline/`.
   The real pipeline is draft PR #14 (branch `voice-pipeline-port`).
-- The real pipeline passed its first GPU run (scripted four-turn calls on an
-  L40). Not yet tried: a real person's voice, the `completed` ending on a
-  GPU, Chatterbox Turbo.
+- Two GPU runs so far. 2026-11-16 (A40): a person called it with their own
+  recorded voice; first audio about 1.2 s, scoring about 4 s, the
+  `completed` ending worked. Found there: the cloned voice sounded little
+  like the speaker, replies ran 10 to 12 s, the caller changed its story
+  and kept pushing after a yes, and every call was graded
+  `recognized_scam` 90. Not yet tried: Chatterbox Turbo.
+- Changed after that run and not yet heard on a GPU: `tts/voice_prep.py`
+  (tidies the recording), the caller prompt, the three-sentence limit and
+  repeat filtering in `chunker.py`, and grading `score-v2`.
 - `BACKEND.md` is this side's proposal for how the backend starts a call and
   receives its result. The backend's owner has not agreed to it or built it.
   Change it together with `calls.BackendCalls`, the mock and `PROTOCOL.md`.
 - Call setup: `calls.BackendCalls` (claims the call from the backend) when
   `PIPELINE_BACKEND_URL` is set, otherwise `calls.DevCalls` (one token, one
   voice file, the sample context). Only `DevCalls` has run for real.
-- Call scoring (`scoring.py`) is built and tested with a fake LLM. It has not
-  run against the real LLM, so the grading prompt is untried. When a call
-  ends, `session.wrap_up` scores it in a background task, reports it through
-  `calls.report`, and clears the conversation.
+- Call scoring (`scoring.py`): when a call ends, `session.wrap_up` scores it
+  in a background task, reports it through `calls.report`, and clears the
+  conversation. The LLM answers plain questions (did the trainee agree,
+  refuse or stay undecided; whether payment was completed; which details
+  they gave; which tactics were used) and `parse_result` works out the outcome and keeps the score in
+  that outcome's range. Asking the LLM for the outcome directly was tried
+  first and it could be talked into full marks by the trainee.
+- Completed payment or credential disclosure takes precedence over a later
+  refusal. Required grading evidence is validated before deriving outcomes.
+  `eval_grading.py` checks ten synthetic cases against a running LLM.
+- Prompts can be tried without a GPU against Qwen3 8B on Ollama. Ollama
+  ignores `repetition_penalty`, so it repeats itself more than vLLM does.
 
-AI-assisted documentation (written with Claude Code), cited per the CSC398 AI
+AI-assisted documentation (written with Claude Code and Codex), cited per the CSC398 AI
 policy.

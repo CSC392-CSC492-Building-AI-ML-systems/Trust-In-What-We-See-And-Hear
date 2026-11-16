@@ -39,9 +39,12 @@ For example, `MOCK_MAX_SECONDS=20` to see the `time_limit` ending, or
 
 ## The real pipeline
 
-Run once on a GPU (2026-11-12, an L40): scripted four-turn calls worked end
-to end. Call scoring was added after that run and has only been tested with
-a fake LLM. The tests use fake models.
+Run twice on a GPU (2026-11-12 on an L40, 2026-11-16 on an A40), the second
+time with a person on the call and a real recorded voice. The caller's
+instructions and grading were changed after that second run and evaluated
+locally with Qwen3 8B through Ollama. The voice recording clean-up has
+automated tests but still needs a GPU listening comparison. The latest
+changes have not run on a GPU. Most tests use fake models.
 
 ```
 microphone -> segmenter -> speech to text -> LLM -> chunker -> voice
@@ -55,8 +58,9 @@ microphone -> segmenter -> speech to text -> LLM -> chunker -> voice
 | `stt.py` | Speech to text (faster-whisper), rejects noise |
 | `llm.py` | Streams the reply from vLLM |
 | `prompt.py` | The caller's instructions, built from the call context |
-| `chunker.py`, `reply_filter.py` | Cut the reply into speakable chunks and clean it |
+| `chunker.py`, `reply_filter.py` | Cut the reply into speakable chunks, keep it to three sentences, filter repeated sentences, and clean it |
 | `tts/chatterbox.py` | The voice (Chatterbox). Other engines plug in here, see `parts.py` |
+| `tts/voice_prep.py` | Shortens pauses in a voice recording and fixes its level before cloning |
 | `calls.py` | Where a call's context and voice recording come from, and where its result goes |
 | `scoring.py` | Scores a finished call with the LLM and checks the answer |
 | `server.py` | Loads the models and starts the server |
@@ -87,6 +91,28 @@ the backend's sample call context, and its result can be read from
 (BACKEND.md), which does not have those endpoints yet. Other settings are
 environment variables, listed at the top of each module.
 
+## Grading checks
+
+The grader extracts the final decision, completed payment, disclosed detail
+kinds and observed tactics. Code derives the outcome and clamps the score.
+Completed payment or credential disclosure takes precedence over a later
+refusal. Missing or malformed evidence triggers a retry. These checks do
+not guarantee that the LLM extracted the facts correctly.
+
+For a repeatable check with ten invented calls, including payment followed
+by refusal and a request for full marks, run from the repo root where the
+pipeline dependencies are installed:
+
+```bash
+LLM_URL=http://localhost:11434/v1/chat/completions LLM_MODEL=qwen3:8b \
+  python voice-pipeline/eval_grading.py 3
+```
+
+This uses an existing Ollama server, prints results and exits unsuccessfully
+if any outcome differs from the expected one. It uses synthetic examples
+only. Ollama's quantized model and runtime differ from the GPU deployment,
+so this does not replace a GPU run.
+
 ## Tests
 
 No GPU needed:
@@ -96,5 +122,5 @@ cd backend
 uv run pytest ../voice-pipeline/tests
 ```
 
-AI-assisted documentation (written with Claude Code), cited per the CSC398 AI
+AI-assisted documentation (written with Claude Code and Codex), cited per the CSC398 AI
 policy.

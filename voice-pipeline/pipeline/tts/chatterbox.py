@@ -23,19 +23,24 @@ recordings do not hurt, but only the speaker embedding uses all of it.
     STREAM_CHUNK_TOKENS   40, about 1.6 s per later piece
     STREAM_CONTEXT_TOKENS 12, earlier tokens re-decoded per piece; more made
                           each piece slower than it plays
-    STREAM_CFM_STEPS      5 decoder steps (0 = the library's default)
+    STREAM_CFM_STEPS      5 decoder steps (0 = the library's default). Fewer
+                          steps trade quality for speed; compare by ear.
+    VOICE_PREP            1 (default) tidies each recording first, see
+                          voice_prep.py
 
-AI-assisted code (written with Claude Code), cited per the CSC398 AI policy.
+AI-assisted code (written with Claude Code and Codex), cited per the CSC398 AI policy.
 """
 
 from __future__ import annotations
 
 import os
+import tempfile
 from typing import Any, Iterator
 
 import numpy as np
 
 from ..parts import EngineInfo, Piece
+from .voice_prep import tidy
 
 TURBO_TAGS = ("[sigh]", "[sniff]", "[gasp]", "[groan]", "[clear throat]")
 
@@ -48,7 +53,8 @@ class ChatterboxEngine:
     def __init__(self, variant: str = "chatterbox", device: str = "cuda",
                  exaggeration: float = 0.7, cfg_weight: float = 0.35, stream: bool = True,
                  first_tokens: int = 12, second_tokens: int = 20, chunk_tokens: int = 40,
-                 context_tokens: int = 12, cfm_steps: int | None = 5):
+                 context_tokens: int = 12, cfm_steps: int | None = 5,
+                 tidy_voices: bool = True):
         if variant not in ("chatterbox", "turbo"):
             raise ValueError(f"unknown Chatterbox variant: {variant}")
         self.turbo = variant == "turbo"
@@ -68,6 +74,7 @@ class ChatterboxEngine:
         self.sizes = dict(first=first_tokens, second=second_tokens, chunk=chunk_tokens,
                           context=context_tokens, cfm_steps=cfm_steps)
         self.streamer = None
+        self.tidy_voices = tidy_voices
 
     @classmethod
     def from_env(cls) -> ChatterboxEngine:
@@ -82,6 +89,7 @@ class ChatterboxEngine:
             chunk_tokens=int(env("STREAM_CHUNK_TOKENS", "40")),
             context_tokens=int(env("STREAM_CONTEXT_TOKENS", "12")),
             cfm_steps=int(env("STREAM_CFM_STEPS", "5")) or None,
+            tidy_voices=env("VOICE_PREP", "1") == "1",
         )
 
     def builtin_voice(self) -> Any:
@@ -89,6 +97,26 @@ class ChatterboxEngine:
         return getattr(self.m, "conds", None)
 
     def prepare_voice(self, wav_path: str) -> Any:
+        if not self.tidy_voices:
+            return self._prepare(wav_path)
+        # Shorten pauses and fix the level first (voice_prep.py). The tidied
+        # copy exists only while the voice is being prepared.
+        import librosa
+        import soundfile
+
+        audio, rate = librosa.load(wav_path, sr=None, mono=True)
+        tidied = tidy(audio, rate)
+        if len(tidied) / rate < self.info.min_reference_seconds:
+            tidied = audio  # too little speech to shorten; use it as it is
+        fd, path = tempfile.mkstemp(suffix=".wav")
+        os.close(fd)
+        try:
+            soundfile.write(path, tidied, rate, subtype="PCM_16")
+            return self._prepare(path)
+        finally:
+            os.unlink(path)
+
+    def _prepare(self, wav_path: str) -> Any:
         if self.turbo:
             self.m.prepare_conditionals(wav_path)
         else:
