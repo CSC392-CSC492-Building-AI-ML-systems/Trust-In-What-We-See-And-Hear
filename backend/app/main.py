@@ -7,8 +7,8 @@ from contextlib import asynccontextmanager
 import httpx
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.api.health import router as health_router
 from app.api.openapi import API_DESCRIPTION, OPENAPI_TAGS
@@ -40,16 +40,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     application.state.settings = settings
-    application.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    ) 
     application.state.audio_decoder = AudioDecoder()
     application.add_exception_handler(
         RequestValidationError, request_validation_error_handler
@@ -71,6 +61,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # Room for the largest voice sample plus the multipart form around it.
     application.add_middleware(
         BodySizeLimitMiddleware, max_bytes=settings.voice_sample_max_bytes + 64 * 1024
+    )
+    # The frontend calls the API from another origin with a bearer token (not cookies), so
+    # credentials stay off. Added last so it is outermost and its headers are on every response,
+    # including the body limit's 413.
+    application.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_allow_origins,
+        allow_methods=["*"],
+        allow_headers=["*"],
     )
     application.include_router(health_router)
     application.include_router(api_router)

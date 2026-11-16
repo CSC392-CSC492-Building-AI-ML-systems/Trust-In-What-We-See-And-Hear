@@ -113,7 +113,7 @@ No quotes are needed around these values.
 ```dotenv
 NEXT_PUBLIC_SUPABASE_URL=https://<project-ref>.supabase.co
 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=sb_publishable_...
-BACKEND_API_URL=http://localhost:8000
+NEXT_PUBLIC_API_URL=http://localhost:8000
 ```
 
 ---
@@ -134,8 +134,8 @@ cd frontend/tiwwsah_webapp
 npm install @supabase/supabase-js @supabase/ssr
 ```
 
-Add the variables from [1.7](#17-environment-files) to `.env.local`. `BACKEND_API_URL` replaces
-the current `BACKEND_API_IP`.
+Add the variables from [1.7](#17-environment-files) to `.env.local` (or copy
+`frontend/tiwwsah_webapp/.env.example`).
 
 ### 2.2 Supabase clients
 
