@@ -10,7 +10,17 @@
 
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { BACKEND_DIR, FRONTEND_DIR, checkDocker, checkNode, fail, loadRootEnv, step, supabase } from "./lib.mjs";
+import {
+  BACKEND_DIR,
+  FRONTEND_DIR,
+  checkDocker,
+  checkNode,
+  fail,
+  loadRootEnv,
+  port,
+  step,
+  supabase,
+} from "./lib.mjs";
 
 checkNode();
 loadRootEnv();
@@ -35,7 +45,9 @@ const { result } = concurrently(
   [
     {
       name: "web",
-      command: "npm run dev",
+      // An explicit port: plain `next dev` honours an inherited PORT and silently moves to another
+      // port when 3000 is taken, which CORS and the auth redirects would reject.
+      command: "npm run dev -- --port 3000",
       cwd: FRONTEND_DIR,
       // Wins over .env.local, so the frontend always calls the backend started here.
       env: { NEXT_PUBLIC_API_URL: `http://localhost:${backendPort}` },
@@ -64,10 +76,4 @@ try {
 } catch {
   // One of the processes exited with an error (already shown above), or Ctrl+C was pressed.
   process.exitCode = 1;
-}
-
-function port(name, fallback) {
-  const value = process.env[name] || fallback;
-  if (!/^\d{1,5}$/.test(value) || Number(value) > 65535) fail(`${name} must be a port number.`);
-  return value;
 }

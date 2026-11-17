@@ -16,6 +16,7 @@ import {
   has,
   loadRootEnv,
   npm,
+  port,
   run,
   step,
   supabase,
@@ -23,7 +24,7 @@ import {
 
 checkNode();
 loadRootEnv();
-const backendPort = process.env.BACKEND_PORT || "8000";
+const backendPort = port("BACKEND_PORT", "8000");
 
 if (!has("uv", ["--version"])) {
   fail("uv is required for the backend: https://docs.astral.sh/uv/getting-started/installation/");
