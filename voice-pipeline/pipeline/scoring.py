@@ -77,7 +77,9 @@ refusal cannot undo payment. False for promises or cancelled plans only.
 out loud. List only these kinds: "home address", "date of birth", \
 "password", "card or account number". Include disclosures even if they \
 later refused or recognized the scam. A street name with a house number is \
-a home address. An empty list if none. Never repeat the details themselves.
+a home address. Only lines that start with "Trainee:" count: an address, \
+email or number that the Caller said is not something the trainee shared. \
+An empty list if none. Never repeat the details themselves.
 - "trainee_response": their FINAL decision, independently of the two facts \
 above. Exactly one of:
   "agreed": they agreed to the ask, asked how to send it and went ahead, or \
@@ -114,6 +116,18 @@ was said."""
 
 RESPONSES = ("agreed", "refused", "undecided")
 DETAIL_KINDS = ("home address", "date of birth", "password", "card or account number")
+_STREET = r"(street|st|avenue|ave|road|rd|drive|dr|lane|ln|boulevard|blvd|way|court|ct|crescent|cres|place|pl)"
+_MONTH = r"(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*"
+# What each kind of detail looks like in the trainee's words (parse_result).
+DETAIL_TRACES = {
+    "home address": re.compile(
+        rf"\b(my (home |street )?address|i live (at|on)|\d+\s+(\w+\s+){{1,3}}{_STREET})\b", re.I),
+    "date of birth": re.compile(
+        rf"\b(born|birthday|date of birth|{_MONTH}\.?\s+\d{{1,2}}|\d{{1,2}}[/-]\d{{1,2}}[/-]\d{{2,4}})\b",
+        re.I),
+    "password": re.compile(r"\b(password|passcode|pin)\b", re.I),
+    "card or account number": re.compile(r"\d[\d\s-]{5,}\d|\b(card|account) (number|is)\b", re.I),
+}
 CALL_START, CALL_END = "CALL START", "CALL END"
 AFTER_CALL = "Grade the trainee in the call above. Reply with the JSON object only."
 # The score must agree with the outcome, whatever the LLM wrote.
@@ -192,7 +206,8 @@ def _texts(value: Any, items: int, limit: int) -> list[str]:
     return [t for t in (_text(v, limit) for v in value) if t][:items]
 
 
-def parse_result(reply: str, tactics: list[str]) -> dict | None:
+def parse_result(reply: str, tactics: list[str],
+                 trainee_text: str | None = None) -> dict | None:
     """Check the LLM's answer. Returns the result, or None if it is unusable.
 
     The LLM answers plain questions about what the trainee did. The outcome
@@ -214,14 +229,21 @@ def parse_result(reply: str, tactics: list[str]) -> dict | None:
     details = data.get("details_shared")
     if not isinstance(payment_sent, bool) or not isinstance(details, list):
         return None
-    if any(not isinstance(d, str) or d.strip().casefold() not in DETAIL_KINDS
-           for d in details):
+    if any(not isinstance(d, str) for d in details):
         return None
     for field in ("tactics_used", "red_flags_noticed"):
         if not isinstance(data.get(field), list) or any(
                 not isinstance(item, str) for item in data[field]):
             return None
-    kinds = {d.strip().casefold() for d in details}
+    # A kind that is not on the list is left out, not a reason to refuse the
+    # whole answer: on the first GPU run the LLM listed one of its own (the
+    # caller had said an address) and the call went ungraded.
+    kinds = {d.strip().casefold() for d in details} & set(DETAIL_KINDS)
+    if trainee_text is not None:
+        # Kept only where the trainee's own words show a trace of it: on a
+        # GPU run the LLM counted an address the caller said as one the
+        # trainee gave, and marked a paying trainee as sharing it.
+        kinds = {k for k in kinds if DETAIL_TRACES[k].search(trainee_text)}
     shared = bool(kinds)
     pushed_back = response == "refused"
     if payment_sent or kinds & {"password", "card or account number"} or response == "agreed":
@@ -276,6 +298,8 @@ async def score_call(llm: Any, ctx: CallContext, history: list[dict],
     Raises whatever the LLM client raises if it cannot be reached.
     """
     lines, trainee_turns = transcript_lines(history)
+    trainee_text = "\n".join(line.removeprefix("Trainee: ") for line in lines
+                             if line.startswith("Trainee: "))
     version = f"{getattr(llm, 'model', 'unknown')}/{PROMPT_VERSION}"
     if trainee_turns == 0:
         return {**INCONCLUSIVE, "model_version": version}
@@ -283,7 +307,7 @@ async def score_call(llm: Any, ctx: CallContext, history: list[dict],
     messages = build_messages(ctx, lines, ended_by)
     started = time.perf_counter()
     for attempt in range(1, ATTEMPTS + 1):
-        result = parse_result(await llm.complete(messages), tactics)
+        result = parse_result(await llm.complete(messages), tactics, trainee_text)
         if result is not None:
             # Outcome and score only: the summary describes the call.
             log.info("call %s scored: %s, %s, attempt %s, %s ms", call_id, result["outcome"],

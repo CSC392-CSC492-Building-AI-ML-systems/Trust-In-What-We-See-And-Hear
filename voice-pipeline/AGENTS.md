@@ -15,7 +15,8 @@ apart from the backend API because it needs a GPU.
 - `BACKEND.md`: the HTTP calls between the backend and the pipeline.
 - `pipeline/`: the real server. `session.py` is one call; the README has a
   table of the other files.
-- `pod/`: scripts to set up and run it on a GPU pod.
+- `pod/`: scripts that set up and run the server on a GPU machine
+  (`setup.sh`, `run.sh`, `voice_engine.sh`, `ming_server.py`).
 - `tests/`: run without a GPU, using fake models behind the same boundaries.
 
 ## Run the tests
@@ -58,20 +59,14 @@ so it is skipped in the backend's environment. Run it where
 
 ## Conventions
 
-- No em dashes anywhere: code, comments, docs, commit messages. Use commas,
-  colons, parentheses or separate sentences.
-- READMEs and docs are short and plain.
-- Commits are authored by the repo owner only. No co-author or tool
-  trailers, and no tool attribution in pull request text.
 - Course policy: AI-written code must be cited. Each file says so in its
   header ("AI-assisted code (written with ..., cited per the CSC398 AI
   policy."). Add that line, naming the tool used, to new files and keep it
   on existing ones.
-- Do not commit, push, open pull requests or post comments unless asked.
-- Never start or leave a GPU pod running without the owner's say. It bills
-  by the hour.
+- Never start or leave a GPU pod running unless the person you are working
+  with asks for it. It bills the team by the hour.
 
-## Current state (2026-11-16)
+## Current state (2026-11-17)
 
 - The mock (PR #13) is merged into `main`, with its `POST /api/v1/calls`,
   call results and `BACKEND.md`. `main`'s `BACKEND.md`, `PROTOCOL.md` and
@@ -83,11 +78,20 @@ so it is skipped in the backend's environment. Run it where
   like the speaker, replies ran 10 to 12 s, the caller changed its story
   and kept pushing after a yes, and every call was graded
   `recognized_scam` 90. Not yet tried: Chatterbox Turbo.
-- Changed after that run and not yet heard on a GPU: `tts/voice_prep.py`
-  (tidies the recording), the caller prompt, the three-sentence limit and
-  repeat filtering in `chunker.py`, and grading `score-v2`.
+- 2026-11-17 (L40, then L40S): the caller prompt, reply limits and grading
+  `score-v2` worked in calls with a person, on Qwen3-8B and then
+  Qwen3-14B-FP8. Qwen3-32B does not fit beside the speech models on 48 GB;
+  `pod/setup.sh` now refuses a model that cannot fit.
+- Voice: on an H100, Ming-3.0-tts-0.5B and Fish Audio Drama 3 both sounded
+  much closer to the speaker than Chatterbox (one listener). Ming is
+  preferred so far, for its size. Both are wired in as `TTS_ENGINE=ming` and `drama`
+  (`tts/served.py`, `pod/voice_engine.sh`, `pod/ming_server.py`) but have
+  not run inside a call yet. Drama 3 needs an 80 GB card.
+- Before a GPU session, check a model's size against the GPU and read its
+  install notes before renting: most failed GPU sessions so far skipped one
+  of those.
 - `BACKEND.md` is this side's proposal for how the backend starts a call and
-  receives its result. The backend's owner has not agreed to it or built it.
+  receives its result. The backend side has not agreed to it or built it yet.
   Change it together with `calls.BackendCalls`, the mock and `PROTOCOL.md`.
 - Call setup: `calls.BackendCalls` (claims the call from the backend) when
   `PIPELINE_BACKEND_URL` is set, otherwise `calls.DevCalls` (one token, one

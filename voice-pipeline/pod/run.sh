@@ -21,5 +21,9 @@ export LLM_MODEL=${LLM_MODEL:-$(cat /root/llm_model.txt)}
 # faster-whisper needs cuDNN and cuBLAS: reuse the ones torch installed.
 LD_LIBRARY_PATH=$($VENV/bin/python -c 'import nvidia.cublas as b, nvidia.cudnn as c; print(b.__path__[0]+"/lib:"+c.__path__[0]+"/lib")')
 export LD_LIBRARY_PATH
+# Running this again replaces a server that is already up. (Stopping it by
+# hand with pkill inside a one-line `ssh host "..."` command also matches
+# that command and drops the connection: on 2026-11-17 that left no server.)
+pkill -f "uvicorn.*pipeline.server:app" && sleep 3 || true
 # No access log: the call's token is in the URL.
 exec $VENV/bin/uvicorn --app-dir "$HERE" pipeline.server:app --host 0.0.0.0 --port 8000 --no-access-log

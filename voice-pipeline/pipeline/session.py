@@ -36,7 +36,8 @@ from .context import CallContext, CallContextValidationError
 from .models import Models
 from .parts import Piece, Utterance
 from .prompt import OPENING_NOTE, build_system_prompt, hint_words, prompt_safe
-from .reply_filter import clean_reply, names_and_first_names, safe_destinations, split_end
+from .reply_filter import (
+    clean_reply, names_and_first_names, only_hesitating, safe_destinations, split_end)
 from .scoring import score_call
 
 log = logging.getLogger("pipeline.call")
@@ -188,6 +189,8 @@ class CallSession:
         # What is remembered is what was spoken, so the model sees its own
         # replies as short as they were. The end marker can sit past the cut.
         _, ended = split_end(self.clean(full))
+        if ended and only_hesitating(user_text):
+            ended = False  # the caller does not give up on someone who is unsure
         text = split_end(self.clean(chunker.text()))[0]
         if text:
             # Store the cleaned reply so the model does not see (and copy) labels.
@@ -331,7 +334,7 @@ async def load_voice(source: str, models: Models) -> Any:
 
 async def serve_call(ws: WebSocket, call_id: str, token: str, *, calls: Any,
                      models: Models, settings: Settings, active: set,
-                     finishing: set) -> None:
+                     finishing: set, last_used: list | None = None) -> None:
     await ws.accept()
     if not token:
         await ws.close(code=4401, reason="missing or invalid token")
@@ -362,6 +365,8 @@ async def serve_call(ws: WebSocket, call_id: str, token: str, *, calls: Any,
             await ws.close(code=4401, reason="missing or invalid token")
             return
         ended_by = "error"
+        if last_used is not None:  # only accepted calls count as use (health)
+            last_used[0] = time.monotonic()
         try:
             ctx, warnings = CallContext.from_dict(setup.context)
             limit = setup.max_duration_seconds
@@ -389,6 +394,8 @@ async def serve_call(ws: WebSocket, call_id: str, token: str, *, calls: Any,
         log.info("call %s: client disconnected", call_id)
     finally:
         active.discard(slot)  # scoring needs no line, so the next call can start
+        if ended_by is not None and last_used is not None:
+            last_used[0] = time.monotonic()
         if ended_by is not None:
             # A task of its own: this handler can be cancelled when the
             # connection goes away, and the result must not go with it.
@@ -434,10 +441,16 @@ def create_app(models: Models, calls: Any, settings: Settings) -> FastAPI:
             await calls.aclose()
 
     app = FastAPI(title="Call audio server", lifespan=lifespan)
+    last_used = [time.monotonic()]  # when an accepted call last started or ended
 
     @app.get("/health")
     def health() -> dict:
-        return {"status": "ok", "calls": len(active), "voice_engine": models.tts.info.name}
+        # idle_seconds lets a GPU machine shut itself down when nobody is
+        # calling.
+        busy = active or finishing
+        idle = 0 if busy else int(time.monotonic() - last_used[0])
+        return {"status": "ok", "calls": len(active), "voice_engine": models.tts.info.name,
+                "idle_seconds": idle}
 
     if hasattr(calls, "reports"):
         # Without a backend (calls.DevCalls): serve results the way the
@@ -461,7 +474,7 @@ def create_app(models: Models, calls: Any, settings: Settings) -> FastAPI:
 
     @app.websocket("/ws/calls/{call_id}")
     async def call_socket(ws: WebSocket, call_id: str, token: str = "") -> None:
-        await serve_call(ws, call_id, token, calls=calls, models=models,
-                         settings=settings, active=active, finishing=finishing)
+        await serve_call(ws, call_id, token, calls=calls, models=models, settings=settings,
+                         active=active, finishing=finishing, last_used=last_used)
 
     return app

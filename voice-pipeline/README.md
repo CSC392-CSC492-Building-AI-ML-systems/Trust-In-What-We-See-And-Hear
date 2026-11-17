@@ -61,6 +61,7 @@ microphone -> segmenter -> speech to text -> LLM -> chunker -> voice
 | `chunker.py`, `reply_filter.py` | Cut the reply into speakable chunks, keep it to three sentences, filter repeated sentences, and clean it |
 | `tts/chatterbox.py` | The voice (Chatterbox). Other engines plug in here, see `parts.py` |
 | `tts/voice_prep.py` | Shortens pauses in a voice recording and fixes its level before cloning |
+| `tts/served.py` | Ming-3.0-tts and Fish Audio Drama 3, which run as their own server (`TTS_ENGINE=ming` or `drama`) |
 | `calls.py` | Where a call's context and voice recording come from, and where its result goes |
 | `scoring.py` | Scores a finished call with the LLM and checks the answer |
 | `server.py` | Loads the models and starts the server |

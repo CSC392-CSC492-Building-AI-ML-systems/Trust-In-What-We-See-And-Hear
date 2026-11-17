@@ -6,6 +6,12 @@ Loads the models once at start-up (about a minute), then serves the same
 WebSocket as mock_server.py. Expects the LLM to be running already (llm.py).
 Settings are environment variables, documented at the top of each module.
 
+    TTS_ENGINE          chatterbox (default) or turbo (tts/chatterbox.py), or
+                        ming or drama, which run as their own server
+                        (tts/served.py, pod/voice_engine.sh)
+    PIPELINE_TEST_PAGE  path to an HTML page to serve at /, for testing
+                        without the app
+
 AI-assisted code (written with Claude Code), cited per the CSC398 AI policy.
 """
 
@@ -24,6 +30,7 @@ from .segmenter import VADSegmenter
 from .session import create_app
 from .stt import RobustSTT
 from .tts.chatterbox import ChatterboxEngine
+from .tts.served import DramaEngine, MingEngine
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 log = logging.getLogger("pipeline.server")
@@ -50,10 +57,34 @@ def warm_up(stt: RobustSTT, tts: ChatterboxEngine) -> None:
         stt.transcribe(at_16k)
 
 
+def transcriber(stt: RobustSTT):
+    """Recording path -> the words in it, for engines that clone from both."""
+    import soundfile
+
+    def transcribe(path: str) -> str:
+        audio, rate = soundfile.read(path, dtype="float32", always_2d=True)
+        audio = audio.mean(axis=1)
+        at_16k = np.interp(np.arange(0, len(audio), rate / 16000),
+                           np.arange(len(audio)), audio).astype(np.float32)
+        return stt.transcribe(at_16k).text  # not logged: stt logs numbers only
+
+    return transcribe
+
+
+def make_tts(stt: RobustSTT):
+    """The voice engine named by TTS_ENGINE (see parts.TTSEngine)."""
+    engine = os.environ.get("TTS_ENGINE", "chatterbox")
+    if engine == "ming":
+        return MingEngine.from_env(transcriber(stt))
+    if engine == "drama":
+        return DramaEngine.from_env(transcriber(stt))
+    return ChatterboxEngine.from_env()  # chatterbox or turbo
+
+
 def load_models() -> Models:
     log.info("loading models...")
     stt = RobustSTT.from_env()
-    tts = ChatterboxEngine.from_env()  # the only engine so far; see parts.TTSEngine
+    tts = make_tts(stt)
     warm_up(stt, tts)
     VADSegmenter()  # loads the speech detector now, not on the first call
     log.info("models ready (voice engine: %s)", tts.info.name)
@@ -70,3 +101,12 @@ else:
     if not calls.token:
         log.warning("PIPELINE_DEV_TOKEN is not set: every connection will be refused")
 app = create_app(load_models(), calls, Settings.from_env())
+
+if os.environ.get("PIPELINE_TEST_PAGE"):
+    # A browser page for trying calls without the app (testing only): it
+    # talks to this server, so anyone with its address and the token can call.
+    from fastapi.responses import FileResponse
+
+    @app.get("/", include_in_schema=False)
+    def test_page() -> FileResponse:
+        return FileResponse(os.environ["PIPELINE_TEST_PAGE"])

@@ -96,6 +96,24 @@ def safe_destinations(text: str) -> str:
     return PHONE.sub(phone, out)
 
 
+# The LLM sometimes hangs up on someone who is only unsure, which ends the
+# call just when a real scammer would press on. So the hang-up is not obeyed
+# when the person's last words were plain hesitation with nothing final in
+# them.
+HESITATION = re.compile(
+    r"\b(maybe|not sure|unsure|don'?t know|dunno|think about|let me think|need to think|"
+    r"call you back|later|hmm+|give me a (minute|second|sec|moment)|"
+    r"give me some time|hold on|one (minute|second|sec|moment))\b", re.IGNORECASE)
+FINAL = re.compile(
+    r"\b(hang(ing)? up|good ?bye|bye|scam|fraud|fake|sent|sending|"
+    r"calling (him|her|them|the police)|stop the simulation)\b", re.IGNORECASE)
+
+
+def only_hesitating(said: str) -> bool:
+    """True if what the person just said is hesitation and nothing final."""
+    return bool(HESITATION.search(said)) and not FINAL.search(said)
+
+
 def split_end(text: str) -> tuple[str, bool]:
     """Remove the end-of-call marker. Returns (text, whether it was there)."""
     out, n = END_RE.subn("", text)

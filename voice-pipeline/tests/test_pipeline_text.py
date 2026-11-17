@@ -15,6 +15,7 @@ from pipeline.prompt import build_system_prompt, hint_words  # noqa: E402
 from pipeline.reply_filter import (  # noqa: E402
     clean_reply,
     names_and_first_names,
+    only_hesitating,
     safe_destinations,
     split_end,
 )
@@ -174,3 +175,18 @@ def test_repeat_filter_still_ignores_case_and_punctuation():
     second = SpeechChunker(said=said)
     chunks = second.feed("PLEASE ask José to call me! I need to talk to him. ") + second.flush()
     assert "PLEASE" not in " ".join(chunks)
+
+
+@pytest.mark.parametrize("said, unsure", [
+    ("Let me think about it.", True),
+    ("I'm not sure. Maybe.", True),
+    ("Can I call you back in a bit?", True),
+    ("Hmm.", True),
+    ("I don't know, this sounds like a scam.", False),
+    ("Maybe later. I'm hanging up now.", False),
+    ("Okay, it's sent.", False),
+    ("No. I'm not sending anything.", False),
+    ("Where do I send it?", False),
+])
+def test_hesitation_is_told_apart_from_a_final_answer(said, unsure):
+    assert only_hesitating(said) is unsure

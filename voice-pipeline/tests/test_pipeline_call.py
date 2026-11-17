@@ -790,3 +790,43 @@ def test_the_end_marker_still_ends_the_call_when_it_sits_past_the_cut(rig):
         ws.send_json({"type": "played", "turn_id": 1})
         assert ws.receive_json() == {"type": "call_ended", "reason": "completed"}
     assert "Goodbye" not in spoken_text(turn)
+
+
+def test_the_caller_cannot_hang_up_on_someone_who_is_only_unsure(rig):
+    rig.stt.results = [Heard("Let me think about it.", True), Heard("No. Goodbye.", True)]
+    rig.llm.replies = ["Hey, it is me calling you.", "Okay, okay, but I cannot wait. [end call]",
+                       "Okay, okay. Goodbye then. [end call]"]
+    with rig.client().websocket_connect(URL) as ws:
+        answer(ws)
+        say_something(ws)
+        assert ws.receive_json()["type"] == "speech_end"
+        read_turn(ws, 2)
+        ws.send_json({"type": "played", "turn_id": 2})
+        say_something(ws)  # the call is still going
+        assert ws.receive_json()["type"] == "speech_end"
+        read_turn(ws, 3)
+        ws.send_json({"type": "played", "turn_id": 3})
+        assert ws.receive_json() == {"type": "call_ended", "reason": "completed"}
+
+
+def test_health_reports_idle_time_and_none_during_a_call(rig, monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(session_module.time, "monotonic", lambda: clock[0])
+    client = rig.client()
+    clock[0] += 120
+    assert client.get("/health").json()["idle_seconds"] == 120
+    with client.websocket_connect(URL) as ws:
+        ws.receive_json()  # ready
+        assert client.get("/health").json()["idle_seconds"] == 0
+        clock[0] += 50
+        ws.send_json({"type": "hangup"})
+        while ws.receive_json()["type"] != "call_ended":
+            pass
+    clock[0] += 30
+    assert client.get("/health").json()["idle_seconds"] == 30
+    # A connection with a wrong token is not use: it keeps nothing awake.
+    with client.websocket_connect("/ws/calls/x?token=wrong") as ws:
+        with pytest.raises(WebSocketDisconnect):
+            ws.receive_json()
+    clock[0] += 10
+    assert client.get("/health").json()["idle_seconds"] == 40

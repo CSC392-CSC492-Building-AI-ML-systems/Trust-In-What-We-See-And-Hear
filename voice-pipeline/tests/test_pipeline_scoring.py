@@ -166,12 +166,34 @@ def test_missing_evidence_is_rejected(field):
 @pytest.mark.parametrize("changes", [
     {"payment_sent": "false"}, {"payment_sent": 0}, {"payment_sent": None},
     {"details_shared": "password"}, {"details_shared": None},
-    {"details_shared": ["their mood"]}, {"details_shared": [7]},
+    {"details_shared": [7]},
     {"tactics_used": None}, {"tactics_used": [7]},
     {"red_flags_noticed": "urgency"}, {"red_flags_noticed": [7]},
 ])
 def test_malformed_evidence_is_rejected(changes):
     assert parse_result(answer(**changes), TACTICS) is None
+
+
+@pytest.mark.parametrize("kind, said, kept", [
+    ("home address", "Okay, I am sending the $500 now.", False),  # the caller said one
+    ("home address", "Come to 14 Elm Street, I'll drive you.", True),
+    ("home address", "My address is on the card.", True),
+    ("date of birth", "Sure, it's March 4.", True),
+    ("date of birth", "What happened to you?", False),
+    ("password", "My pin is the usual one.", True),
+    ("card or account number", "It's 4519 2210 8812.", True),
+    ("card or account number", "I can send $500.", False),
+])
+def test_a_detail_counts_only_if_the_trainee_said_something_like_it(kind, said, kept):
+    result = parse_result(answer(details_shared=[kind]), TACTICS, trainee_text=said)
+    assert result["sensitive_info_shared"] is kept
+
+
+def test_a_kind_of_detail_that_is_not_listed_is_left_out():
+    result = parse_result(answer(details_shared=["email address", "their mood"]), TACTICS)
+    assert (result["outcome"], result["sensitive_info_shared"]) == ("recognized_scam", False)
+    result = parse_result(answer(details_shared=["email address", "password"]), TACTICS)
+    assert (result["outcome"], result["sensitive_info_shared"]) == ("fully_complied", True)
 
 
 def test_detail_labels_are_case_insensitive():
@@ -243,11 +265,11 @@ def test_score_call_asks_once_and_names_the_model():
     llm = OneAnswerLLM(json.dumps(GOOD))
     history = [{"role": "user", "content": OPENING_NOTE},
                {"role": "assistant", "content": "It's me."},
-               {"role": "user", "content": "No."}]
+               {"role": "user", "content": "No. Come to 14 Elm Street instead."}]
     result = asyncio.run(score_call(llm, context(), history, "hangup"))
     assert result == {**RESULT, "model_version": "some-model/score-v2"}
     assert len(llm.asked) == 1
-    assert history[2] == {"role": "user", "content": "No."}  # not changed by scoring
+    assert history[2]["content"] == "No. Come to 14 Elm Street instead."  # not changed
 
 
 def test_score_call_gives_up_after_two_unusable_answers():
