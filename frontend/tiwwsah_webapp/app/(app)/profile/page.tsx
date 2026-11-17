@@ -12,9 +12,12 @@ export default function ProfilePage() {
     const [firstName, setFirstName] = useState();
     const [lastName, setLastName] = useState();
     const[loaded, isLoaded] = useState(false);
+    const[editing, isEditing] = useState(false);
+    const empty = "Loading...";
 
     async function loadUser() {
         try{
+            isLoaded(false);
             const response = await apiFetch(`${process.env.NEXT_PUBLIC_API_URL}/api/v1/users/me`,"GET")
             if (!response.ok) {
                 throw new Error("Unable to load profile");
@@ -39,26 +42,39 @@ export default function ProfilePage() {
     useEffect(() => { loadUser(); }, []);
     //useEffect(() => {  }, [loaded]);
 
+    function mainPage(){
+        if (!editing){ information(); }
+        else { updateProfile(); }
+    }
+
+    function updateProfile() {
+
+    }
+
     function information(){
         if (!loaded) {
             return (
                 <div className="info_container">
-                    <div className="profile_icon"><UserRound aria-hidden="true"/></div>
+                    <div className="profile">
+                        <div className="profile_icon"><UserRound aria-hidden="true"/></div>
+                        <button className="update_button"> Edit Profile </button>
+                    </div>
                     <div className="profile_info">
-
+                        Username:
                         <br/>
-                        <div className="loading_profile_text">{username}</div>
+                        <div className="loading_profile_text">{empty}</div>
                         <br/>
-
+                        First Name:
                         <br/>
-                        <div className="loading_profile_text">{username}</div>
+                        <div className="loading_profile_text">{empty}</div>
                         <br/>
-
+                        Last Name:
                         <br/>
-                        <div className="loading_profile_text">{username}</div>
+                        <div className="loading_profile_text">{empty}</div>
                         <br/>
+                        Verification Status:
                         <br/>
-                        <div className="loading_profile_text">{username}</div>
+                        <div className="loading_profile_text">{empty}</div>
                     </div>
                 </div>);
         }
@@ -66,20 +82,20 @@ export default function ProfilePage() {
         else {
             return (
                 <div className="info_container">
-                    <div className="profile_icon"><UserRound aria-hidden="true"/></div>
+                    <div className="profile">
+                        <div className="profile_icon"><UserRound aria-hidden="true"/></div>
+                        <button className="update_button"> Edit Profile </button>
+                    </div>
                     <div className="profile_info">
                         Username:
                         <br/>
                         <div className="profile_text">{username}</div>
-                        <br/>
                         First Name:
                         <br/>
                         <div className="profile_text">{firstName}</div>
-                        <br/>
                         Last Name:
                         <br/>
                         <div className="profile_text">{lastName}</div>
-                        <br/>
                         Verification Status:<br/>
                         <div className="profile_text">{checkStatus()}</div>
                     </div>
