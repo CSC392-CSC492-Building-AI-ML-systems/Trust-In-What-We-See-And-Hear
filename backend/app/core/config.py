@@ -44,6 +44,20 @@ class Settings(BaseSettings):
     # ffmpeg decodes uploaded audio. A name on PATH or a full path.
     ffmpeg_path: str = "ffmpeg"
 
+    # The voice pipeline (voice-pipeline/BACKEND.md). Calls cannot start
+    # without both. The WebSocket base address, e.g. wss://pipeline.example,
+    # is where `ws_url` points the browser.
+    pipeline_ws_url: str | None = None
+    # Shared secret the pipeline sends to /api/v1/internal (PIPELINE_BACKEND_SECRET there).
+    pipeline_backend_secret: SecretStr | None = None
+    # How long the token in `ws_url` can be claimed after the call is created.
+    call_claim_valid_seconds: int = Field(default=120, gt=0)
+    # How long the signed link to the persona's voice sample works.
+    call_voice_url_valid_seconds: int = Field(default=300, ge=60)
+    # A call still in progress this long after it started never got a result
+    # (the pipeline caps calls at 600 s, plus time for scoring), so it is failed.
+    call_result_timeout_seconds: int = Field(default=15 * 60, gt=0)
+
 
 @lru_cache
 def get_settings() -> Settings:

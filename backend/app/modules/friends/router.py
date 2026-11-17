@@ -13,12 +13,18 @@ from app.integrations.supabase import (
     get_supabase_db,
 )
 from app.modules.friends.schemas import (
+    FriendNotesUpdate,
     FriendRequestCreate,
     FriendRequestQuery,
     FriendRequestResponse,
     FriendResponse,
 )
-from app.modules.friends.service import FRIENDSHIP_COLUMNS, pair_filter
+from app.modules.friends.service import (
+    FRIENDSHIP_COLUMNS,
+    notes_column,
+    own_notes,
+    pair_filter,
+)
 from app.modules.users.public import PUBLIC_USER_COLUMNS, to_public_user
 
 router = APIRouter(tags=["Friends"])
@@ -194,6 +200,45 @@ async def get_friends_list(
     )
 
 
+@router.put(
+    "/friends/{user_id}/notes",
+    response_model=FriendResponse,
+    responses=error_responses(
+        status.HTTP_404_NOT_FOUND, ("friend_not_found", "This user is not a friend.")
+    ),
+)
+async def update_friend_notes(
+    user_id: Annotated[UUID, Path(description="The friend's user ID.")],
+    payload: FriendNotesUpdate,
+    user: CurrentUser,
+    supabase_db: SupabaseDb,
+) -> FriendResponse:
+    """Add, change or clear the current user's private note about a friend.
+
+    Only the current user sees it. It is given to the AI caller in calls the
+    current user starts with this friend's voice, to make them more convincing.
+    """
+    friends = await supabase_db.select(
+        "friendships",
+        {
+            "or": pair_filter(user.user_id, user_id, "requester_id", "addressee_id"),
+            "status": "eq.accepted",
+        },
+        "id,requester_id",
+    )
+    if not friends:
+        _friend_not_found()
+    rows = await supabase_db.update(
+        "friendships",
+        {"id": f"eq.{friends[0]['id']}", "status": "eq.accepted"},
+        {notes_column(friends[0], user.user_id): payload.notes or None},
+        FRIENDSHIP_COLUMNS,
+    )
+    if not rows:  # unfriended since the check above
+        _friend_not_found()
+    return _to_friend(rows[0], user.user_id)
+
+
 @router.delete(
     "/friends/{user_id}",
     status_code=status.HTTP_204_NO_CONTENT,
@@ -221,7 +266,7 @@ async def remove_friend(
         "id",
     )
     if not rows:
-        api_error(status.HTTP_404_NOT_FOUND, "friend_not_found", "That user is not your friend.")
+        _friend_not_found()
 
 
 def _existing_friendship_conflict(row: dict[str, Any], user_id: UUID) -> NoReturn:
@@ -259,8 +304,14 @@ def _to_request(row: dict[str, Any], user_id: UUID) -> FriendRequestResponse:
 def _to_friend(row: dict[str, Any], user_id: UUID) -> FriendResponse:
     _, other = _other_user(row, user_id)
     return FriendResponse(
-        **to_public_user(other).model_dump(), friends_since=row["accepted_at"]
+        **to_public_user(other).model_dump(),
+        friends_since=row["accepted_at"],
+        notes=own_notes(row, user_id),
     )
+
+
+def _friend_not_found() -> NoReturn:
+    api_error(status.HTTP_404_NOT_FOUND, "friend_not_found", "That user is not your friend.")
 
 
 def _request_not_found() -> NoReturn:

@@ -24,7 +24,7 @@ CurrentUser = Annotated[AuthenticatedUser, Depends(get_current_user)]
 SupabaseDb = Annotated[SupabaseDatabase, Depends(get_supabase_db)]
 
 SCENARIO_COLUMNS = (
-    "id,created_by,title,category,difficulty,description,system_prompt,red_flags,"
+    "id,created_by,title,category,difficulty,description,ask,system_prompt,red_flags,"
     "max_duration_seconds,created_at,updated_at"
 )
 DIFFICULTY_LEVELS: dict[Difficulty, int] = {"easy": 1, "medium": 2, "hard": 3}
@@ -147,6 +147,7 @@ def _to_scenario(row: dict[str, Any]) -> ScenarioResponse:
         category=row["category"],
         difficulty=DIFFICULTY_NAMES[row["difficulty"]],
         description=row["description"],
+        ask=row["ask"],
         # Built-in prompts stay private so the app is harder to mine for scam scripts.
         system_prompt=None if built_in else row["system_prompt"],
         red_flags=row["red_flags"],

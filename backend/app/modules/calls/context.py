@@ -1,7 +1,7 @@
 """Validate the data needed to run one simulated call.
 
-`POST /calls` will build this after checking consent, friendship and the
-persona's voice (see supabase/database-schema.md). The agent does not read
+`POST /calls` builds this (service.build_context) after checking consent,
+friendship and the persona's voice (see supabase/database-schema.md). The agent does not read
 the database itself. Example input: `sample_call_context.json`.
 
 | Field | Suggested source | Required / default |
@@ -9,12 +9,12 @@ the database itself. Example input: `sample_call_context.json`.
 | persona.name | `users.first_name` + `users.last_name` of `calls.persona_user_id` | required |
 | persona.relationship | Persona's relationship to target | "friend" |
 | target.name | `users.first_name` + `users.last_name` of `calls.user_id` | empty |
-| target.called_as | How the persona addresses the target | target.name |
+| target.called_as | `users.first_name` of `calls.user_id` | target.name |
 | scenario.title | `scam_scenarios.title` | required |
 | scenario.situation | `scam_scenarios.description` | required |
-| scenario.ask | **TBD**: no column yet | required |
+| scenario.ask | `scam_scenarios.ask` | required |
 | scenario.tactics | `scam_scenarios.red_flags` | empty list |
-| details | `users.onboarding_answers` (**TBD**: whose) | empty dict |
+| details | The target's own note about the persona (`friendships`); onboarding answers **TBD** | empty dict |
 
 `CallContext.from_dict` returns (context, warnings) on success. Invalid core
 fields raise `CallContextValidationError`, with structured `errors` and

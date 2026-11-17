@@ -1,8 +1,9 @@
 # What the pipeline needs from the backend (proposal)
 
 How a call gets from `POST /api/v1/calls` to the voice pipeline and back.
-Neither side is built yet, apart from the mock's stand-ins for sections 1
-and 4. Names follow `supabase/database-schema.md` where it already has them.
+The backend side is built: `backend/app/modules/calls/router.py` (sections 1
+and 4) and `internal.py` (sections 2 and 3). Names follow
+`supabase/database-schema.md`.
 
 The pipeline never reads the database or Storage itself. It holds one secret
 (for the backend) and no Supabase keys.
@@ -95,9 +96,10 @@ stays `in_progress`. The backend should mark such calls `failed` after
 
 ## 3. Handing over the result: `POST /api/v1/internal/calls/<call id>/result`
 
-Not built on either side yet. Sent once by the pipeline after every call
-that was claimed, a few seconds after it ends, with the same `Authorization`
-header.
+Sent by the pipeline after every call that was claimed, a few seconds after
+it ends, with the same `Authorization` header. The backend answers `204`, and
+also `204` for a call that is already finished, so the same report can be
+sent twice. A call that was never claimed gets `409`.
 
 ```json
 {
@@ -173,8 +175,10 @@ which is how it is tested today.
 
 ## Still open
 
-- `scenario.ask` has no column yet, and it is not decided whose onboarding
-  answers go in `details` (both noted in `context.py`).
+- `scenario.ask` comes from `scam_scenarios.ask` (migration 0005). `details`
+  holds the call recipient's own note about the friend, if they wrote one
+  (`friendships`, migration 0005). Whose onboarding answers may also go
+  there is not decided.
 - Whether to add a `scoring` status between `in_progress` and `completed`.
   Not needed for the flow above.
 

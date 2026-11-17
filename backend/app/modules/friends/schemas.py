@@ -1,8 +1,8 @@
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints
 
 from app.api.schemas import Pagination, RequestModel
 from app.modules.users.public import PublicUser
@@ -29,5 +29,27 @@ class FriendRequestResponse(BaseModel):
     created_at: datetime
 
 
+NOTES_MAX_LENGTH = 100
+
+Notes = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, max_length=NOTES_MAX_LENGTH),
+    Field(
+        description=(
+            "The current user's private note about this friend, e.g. `We met at UofT. "
+            "Calls me Bo.` The friend never sees it. When the current user starts a "
+            "call with this friend's voice, the AI caller is given it."
+        )
+    ),
+]
+
+
+class FriendNotesUpdate(RequestModel):
+    notes: Notes | None = Field(description="The new note. Null or an empty string clears it.")
+
+
 class FriendResponse(PublicUser):
     friends_since: datetime
+    notes: str | None = Field(
+        description="The current user's private note about this friend; null if none."
+    )
