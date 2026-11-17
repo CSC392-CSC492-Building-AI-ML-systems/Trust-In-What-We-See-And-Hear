@@ -3,6 +3,14 @@
 - `migrations/`: SQL migrations, named `<number>_migration<number>.sql` so they sort in the order
   they must run. This is the source of truth for the database.
 - `database-schema.md`: explains the schema (tables, relationships, RLS and why).
+- `config.toml`: settings for the local Supabase stack the Supabase CLI runs (see
+  [Local development](../README.md#local-development)). The GitHub integration does not apply it
+  to the hosted project: that would take a `[remotes]` block naming the project, so do not add one
+  without agreeing it first. Its `project_id` names the local Docker containers and network, which
+  `compose.yaml` refers to.
+
+To try a new migration locally before opening a PR, run `npm run supabase migration up` (or
+`npm run supabase db reset` to rebuild the local database from scratch).
 
 ## Applying migrations
 
