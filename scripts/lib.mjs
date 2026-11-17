@@ -39,6 +39,16 @@ export function loadRootEnv() {
   if (existsSync(file)) process.loadEnvFile(file);
 }
 
+/** A port from the environment (or `fallback`), validated as 1-65535. */
+export function port(name, fallback) {
+  const value = process.env[name] || fallback;
+  const number = Number(value);
+  if (!/^\d+$/.test(value) || number < 1 || number > 65535) {
+    fail(`${name} must be a port number from 1 to 65535 (got "${value}").`);
+  }
+  return value;
+}
+
 /** Run a command to completion, streaming its output. Exits the script if it fails. */
 export function run(command, args, { cwd = ROOT, env, capture = false } = {}) {
   const result = spawnSync(command, args, {
