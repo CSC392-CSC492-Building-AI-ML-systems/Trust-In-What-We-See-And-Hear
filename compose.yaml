@@ -1,12 +1,15 @@
 # Dockerized dev environment: frontend, backend and mock voice pipeline. Supabase runs from the
 # Supabase CLI, which manages its own containers. See the root README ("Local development"):
 #
-#   npx --yes supabase@3.1.0 start
-#   docker compose up --build --watch
+#   npm run docker
+#
+# which runs `npx --yes supabase@<pinned version> start` and then
+# `docker compose up --build --watch --force-recreate` (Compose 2.25 or newer).
 #
 # Source is synced into the containers by Compose Watch (not bind mounts, whose file events are
 # unreliable on Windows and macOS), so the dev servers reload on save. Changing a dependency
-# manifest or lockfile rebuilds the image.
+# manifest or lockfile rebuilds the image. --force-recreate starts from fresh containers, since a
+# reused one can still hold synced edits that were since undone on the host.
 #
 # Host ports can be changed in an optional root .env (see .env.example).
 
