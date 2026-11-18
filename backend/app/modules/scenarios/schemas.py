@@ -5,6 +5,7 @@ from uuid import UUID
 from pydantic import BaseModel, Field, StringConstraints, model_validator
 
 from app.api.schemas import RequestModel
+from app.modules.calls.context import LIMITS, MAX_TACTICS
 
 ScamCategory = Literal[
     "grandparent_emergency",
@@ -18,10 +19,15 @@ ScamCategory = Literal[
 ]
 Difficulty = Literal["easy", "medium", "hard"]
 
-Title = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
+# Title, description, ask and red flags become the call context's scenario
+# (app/modules/calls/context.py), so they use its limits: a scenario that
+# can be saved can always start a call, and red flags are never cut short.
+Title = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=LIMITS["title"])
+]
 Description = Annotated[
     str,
-    StringConstraints(strip_whitespace=True, min_length=1, max_length=1000),
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=LIMITS["situation"]),
     Field(description="Shown to the user when choosing a scenario."),
 ]
 SystemPrompt = Annotated[
@@ -34,11 +40,23 @@ SystemPrompt = Annotated[
         )
     ),
 ]
-RedFlag = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
+Ask = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=LIMITS["ask"]),
+    Field(
+        description=(
+            "What the caller asks the user to do, e.g. `Send $500 in gift cards`. "
+            "Passed to the call agent as the scam's request."
+        )
+    ),
+]
+RedFlag = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=LIMITS["tactic"])
+]
 RedFlags = Annotated[
     list[RedFlag],
     Field(
-        max_length=20,
+        max_length=MAX_TACTICS,
         description="Warning signs the user should notice, e.g. `urgency`, `gift cards`.",
     ),
 ]
@@ -52,6 +70,7 @@ class ScenarioCreate(RequestModel):
     category: ScamCategory
     difficulty: Difficulty = "medium"
     description: Description
+    ask: Ask
     system_prompt: SystemPrompt
     red_flags: RedFlags = Field(default_factory=list)
     max_duration_seconds: MaxDuration = 300
@@ -64,6 +83,7 @@ class ScenarioUpdate(RequestModel):
     category: ScamCategory | None = None
     difficulty: Difficulty | None = None
     description: Description | None = None
+    ask: Ask | None = None
     system_prompt: SystemPrompt | None = None
     red_flags: RedFlags | None = None
     max_duration_seconds: MaxDuration | None = None
@@ -85,6 +105,12 @@ class ScenarioResponse(BaseModel):
     category: ScamCategory
     difficulty: Difficulty
     description: str
+    ask: str | None = Field(
+        description=(
+            "What the caller asks the user to do. Null only for scenarios created "
+            "before this field existed; calls cannot start with those until it is set."
+        )
+    )
     system_prompt: str | None = Field(
         description="Only returned for the current user's own scenarios; null for built-in ones."
     )

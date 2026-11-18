@@ -146,7 +146,9 @@ def test_every_api_operation_requires_authentication(application):
     ]
     assert operations
     for method, path, operation in operations:
-        assert {"SupabaseBearer": []} in operation.get("security", []), (
+        # Only the voice pipeline calls /internal, with its shared secret.
+        scheme = "PipelineSecret" if path.startswith("/api/v1/internal/") else "SupabaseBearer"
+        assert {scheme: []} in operation.get("security", []), (
             f"{method} {path} is not protected"
         )
 
