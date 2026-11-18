@@ -156,6 +156,8 @@ class RunPod:
             if status in (409, 503):  # the container is still starting
                 time.sleep(5)
                 continue
+            if status == 403:
+                raise PodError(f"This API key is not allowed to run commands on pods. {KEY_HELP}")
             raise PodError(f"RunPod could not run a command on the pod (HTTP {status}): {detail(parsed)}")
         raise PodError("The pod did not accept commands for over 3 minutes.")
 
@@ -307,6 +309,24 @@ def create_pod(api: RunPod, args: argparse.Namespace, token: str) -> tuple[dict,
                    "--community for the cheaper community cloud, or raise --max-price.")
 
 
+KEY_HELP = ("The team admin can fix the key: in the RunPod console, Credentials, API Keys, "
+            "the pencil icon on the key, then allow running commands on pods (or give the key "
+            "All access).")
+
+
+def check_key_can_run_commands(api: RunPod) -> None:
+    """Fail before renting if the key may not run commands on pods.
+
+    Asks to run a command on a pod that does not exist: a key without the
+    permission is refused (403) before RunPod looks for the pod (404).
+    """
+    status, parsed = api.call("POST", "/pods/no-such-pod-permission-check/exec",
+                              {"command": ["true"], "timeoutSeconds": 1})
+    if status == 403:
+        raise PodError(f"This API key is not allowed to run commands on pods, which the setup "
+                       f"needs. Nothing was rented. {KEY_HELP}")
+
+
 def earlier_pod(api: RunPod, mine: str) -> dict | None:
     """Another of our pods created before this one, if two starts raced.
 
@@ -409,6 +429,7 @@ def cmd_start(api: RunPod, args: argparse.Namespace) -> None:
         say("Use that one, or stop it first. (--another starts a second one, at a second price.)")
         return
 
+    check_key_can_run_commands(api)
     token = secrets.token_urlsafe(12)
     pod, env = create_pod(api, args, token)
     pod_id = pod["id"]

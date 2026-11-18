@@ -44,6 +44,7 @@ class FakeAPI(pod.RunPod):
         self.pods = list(pods)
         self.created = []
         self.files = {}
+        self.no_exec = False
 
     def call(self, method, path, body=None, timeout=60):
         if path.startswith("/catalog/gpus"):
@@ -56,6 +57,8 @@ class FakeAPI(pod.RunPod):
         if method == "GET" and path == "/pods":
             return 200, {"pods": self.pods}
         if method == "POST" and path.endswith("/exec"):
+            if "no-such-pod" in path:
+                return (403 if self.no_exec else 404), {"detail": "..."}
             return 200, self.exec(body["command"])
         raise AssertionError(f"unexpected {method} {path}")
 
@@ -144,3 +147,16 @@ def test_of_two_starts_at_once_only_the_earlier_pod_stays():
     api.pod = lambda pod_id: next(p for p in api.pods if p["id"] == pod_id)
     assert pod.earlier_pod(api, "b2")["id"] == "a1"  # the later one gives way
     assert pod.earlier_pod(api, "a1") is None          # the earlier one stays
+
+
+def test_a_key_that_cannot_run_commands_is_caught_before_renting(tmp_path):
+    api = FakeAPI()
+    api.no_exec = True
+    (tmp_path / "v.wav").write_bytes(b"RIFF....WAVE")
+    with pytest.raises(pod.PodError, match="Nothing was rented"):
+        pod.cmd_start(api, start_args(voice=str(tmp_path / "v.wav")))
+    assert api.created == []
+
+
+def test_a_key_that_can_run_commands_passes_the_check():
+    pod.check_key_can_run_commands(FakeAPI())  # 404 for the made-up pod: allowed
