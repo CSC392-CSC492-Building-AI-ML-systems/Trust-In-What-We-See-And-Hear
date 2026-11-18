@@ -153,8 +153,14 @@ def test_progress_lines_are_read_from_the_container_log(monkeypatch):
               b'data: not json\n']
 
     class Stream:
+        def __init__(self):
+            self.left = list(stream)
+
+        def readline(self):
+            return self.left.pop(0) if self.left else b""
+
         def __enter__(self):
-            return iter(stream)
+            return self
 
         def __exit__(self, *exc):
             return False

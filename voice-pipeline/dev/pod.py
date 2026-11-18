@@ -150,11 +150,13 @@ class RunPod:
             raise PodError(f"RunPod could not read pod {pod_id} (HTTP {status}): {detail(parsed)}")
         return parsed
 
-    def log_lines(self, pod_id: str, tail: int = 300, wait: float = 4) -> list[str] | None:
-        """session.sh's progress lines from the pod's container log, or None.
+    def log_lines(self, pod_id: str, tail: int = 300, wait: float = 6) -> list[str] | str:
+        """session.sh's progress lines from the pod's container log.
 
-        The log is a stream that stays open; it is read for `wait` seconds.
-        Any key that can read pods can do this, not only whoever started it.
+        Returns the lines, or a short reason if the log could not be read. The
+        log is a stream that stays open: it can take several seconds to start,
+        then it is read for `wait` seconds. Any key that can read pods can do
+        this, not only the key of whoever started the pod.
         """
         request = urllib.request.Request(
             f"{API}/pods/{pod_id}/logs?source=container&tail={tail}",
@@ -162,20 +164,32 @@ class RunPod:
                      "User-Agent": "voice-pipeline-pod-script"})
         lines: list[str] = []
         try:
-            with urllib.request.urlopen(request, timeout=wait) as response:
-                for raw in response:
-                    text = raw.decode(errors="replace").strip()
-                    if text.startswith("data:"):
-                        try:
-                            line = json.loads(text[5:]).get("line", "")
-                        except ValueError:
-                            continue
-                        if LOG_MARK in line:
-                            lines.append(line.split(LOG_MARK, 1)[1])
-        except (TimeoutError, OSError):
-            pass  # the stream stays open: stopping here is how a read ends
-        except Exception:
-            return None
+            response = urllib.request.urlopen(request, timeout=30)
+        except urllib.error.HTTPError as e:
+            return f"RunPod answered HTTP {e.code}"
+        except OSError as e:
+            return f"could not open the log ({e})"
+        with response:
+            try:  # short reads from here on, so the open stream cannot hold us
+                response.fp.raw._sock.settimeout(2)
+            except AttributeError:
+                pass
+            deadline = time.time() + wait
+            while time.time() < deadline:
+                try:
+                    raw = response.readline()
+                except OSError:  # nothing more for now
+                    break
+                if not raw:
+                    break
+                text = raw.decode(errors="replace").strip()
+                if text.startswith("data:"):
+                    try:
+                        line = json.loads(text[5:]).get("line", "")
+                    except ValueError:
+                        continue
+                    if LOG_MARK in line:
+                        lines.append(line.split(LOG_MARK, 1)[1])
         return lines
 
 
@@ -559,7 +573,9 @@ def show_pod(api: RunPod, pod: dict) -> None:
             say(f"  make a call: {call_link(pod['id'], token)}")
         return
     lines = api.log_lines(pod["id"])
-    if lines:
+    if isinstance(lines, str):
+        say(f"  setup: in progress (its progress could not be read: {lines})")
+    elif lines:
         say("  setup: in progress. Latest:")
         for line in lines[-3:]:
             say("    " + line)
@@ -584,9 +600,10 @@ def cmd_logs(api: RunPod, args: argparse.Namespace) -> None:
     for pod in pods:
         lines = api.log_lines(pod["id"], tail=2000)
         say(f"===== pod {pod['id']} (last {args.lines} lines)")
-        if lines is None:
-            say("(RunPod did not return the pod's log)")
-        for line in (lines or [])[-args.lines:]:
+        if isinstance(lines, str):
+            say(f"(the pod's log could not be read: {lines})")
+            continue
+        for line in lines[-args.lines:]:
             say(line)
 
 
