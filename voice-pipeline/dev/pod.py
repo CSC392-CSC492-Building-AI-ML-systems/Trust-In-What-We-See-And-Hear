@@ -309,9 +309,11 @@ def create_pod(api: RunPod, args: argparse.Namespace, token: str) -> tuple[dict,
                    "--community for the cheaper community cloud, or raise --max-price.")
 
 
-KEY_HELP = ("The team admin can fix the key: in the RunPod console, Credentials, API Keys, "
-            "the pencil icon on the key, then allow running commands on pods (or give the key "
-            "All access).")
+# Found on 2026-11-17: a Restricted key with Pods read and write could create
+# and delete pods but was refused when running commands on one.
+KEY_HELP = ("RunPod only lets keys with full access run commands on pods. The team admin "
+            "needs to make one: RunPod console, Credentials, API Keys, Create API Key, with "
+            "full access.")
 
 
 def check_key_can_run_commands(api: RunPod) -> None:

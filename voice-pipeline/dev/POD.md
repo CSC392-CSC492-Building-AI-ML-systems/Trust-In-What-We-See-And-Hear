@@ -29,9 +29,9 @@ you are done.
    console, pick the team in the account menu at the top left.
 2. Get the team's API key from the team admin. Developer members do not
    see the API Keys page, so the admin makes the key (with the team picked:
-   Credentials, API Keys, Create API Key) and sends it privately. The key
-   needs: Pods read and write, running commands on pods, Catalog read and
-   Account read. All access also works. Keep it
+   Credentials, API Keys, Create API Key) and sends it privately. It has
+   to be a key with full access: RunPod refuses to run commands on pods
+   with a restricted key, even one allowed to create pods. Keep it
    somewhere safe and never post it in a shared channel.
 3. Install Python 3.9 or newer.
    - Windows: `winget install Python.Python.3.12` in PowerShell, or the
@@ -141,7 +141,7 @@ each call) needs the backend's call endpoints (PR #15) first.
 | What you see | What to do |
 |---|---|
 | "Every GPU that fits is taken right now" | Stock changes by the minute. Try again, add `--community`, or raise `--max-price` |
-| "not allowed to run commands on pods" | The key lacks that permission. The admin edits it (Credentials, API Keys, pencil icon) |
+| "not allowed to run commands on pods" | The key is restricted. The admin makes a key with full access |
 | "RunPod refused the API key (401)" | `pod.py --new-key start` and paste a key made with the team picked |
 | "Python could not check RunPod's HTTPS certificate" (Mac) | Run `Install Certificates.command` in the Python folder under Applications |
 | "is not really a WAV file inside" | The recording is another format renamed to .wav. Convert it: `afconvert -f WAVE -d LEI16@24000 -c 1 in.m4a voice.wav` (macOS) or `ffmpeg -i in.m4a -ar 24000 -ac 1 voice.wav` (Windows) |
