@@ -27,10 +27,10 @@ you are done.
 1. Join the RunPod team. Open the invite link the team admin sent you,
    sign in or create a RunPod account, and select Join Team. In the RunPod
    console, pick the team in the account menu at the top left.
-2. Make an API key. With the team picked, go to Settings, API Keys,
-   Create API Key, with All access. Copy it somewhere safe: RunPod shows it
-   only once. If that page does not let you create one, ask the team admin
-   for the team's key.
+2. Get the team's API key from the team admin. Developer members do not
+   see the API Keys page, so the admin makes the key (with the team picked:
+   Settings, API Keys, Create API Key) and sends it privately. Keep it
+   somewhere safe and never post it in a shared channel.
 3. Install Python 3.9 or newer.
    - Windows: `winget install Python.Python.3.12` in PowerShell, or the
      installer from python.org (tick "Add python.exe to PATH"). Check it with
@@ -141,6 +141,7 @@ each call) needs the backend's call endpoints (PR #15) first.
 | "Every GPU that fits is taken right now" | Stock changes by the minute. Try again, add `--community`, or raise `--max-price` |
 | "RunPod refused the API key (401)" | `pod.py --new-key start` and paste a key made with the team picked |
 | "Python could not check RunPod's HTTPS certificate" (Mac) | Run `Install Certificates.command` in the Python folder under Applications |
+| "unrecognized arguments" | A path with spaces needs quotes: `--voice "C:\My Files\voice.wav"` |
 | `py` or `python3` is not found | Python is not installed or not on PATH; see step 3 above |
 | "The setup failed" | The reason and the last log lines are printed above it. Send them to the team; the script offers to stop the pod |
 | The page says the socket closed with code 4401 | The token in the address is wrong; copy the link from `status` again |

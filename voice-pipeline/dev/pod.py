@@ -183,10 +183,9 @@ def load_key(new_key: bool) -> str:
         return os.environ["RUNPOD_API_KEY"].strip()
     if KEY_FILE.is_file() and not new_key:
         return KEY_FILE.read_text().strip()
-    say("This needs a RunPod API key made inside the team account:")
-    say("  1. Open https://www.console.runpod.io and pick the team in the account menu (top left).")
-    say("  2. Go to Settings, API Keys, Create API Key. Give it All access (it creates pods).")
-    say("  3. Copy the key and paste it here. It is not shown as you paste.")
+    say("This needs the RunPod team's API key. Ask the team admin for it: Developer")
+    say("members cannot make one. (The admin makes it with the team picked: Settings,")
+    say("API Keys, Create API Key.) Paste it here; it is not shown as you paste.")
     key = getpass.getpass("RunPod API key: ").strip()
     if not key:
         raise PodError("No key given.")
