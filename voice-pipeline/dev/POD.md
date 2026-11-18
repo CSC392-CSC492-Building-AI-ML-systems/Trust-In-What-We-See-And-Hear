@@ -29,7 +29,7 @@ you are done.
    console, pick the team in the account menu at the top left.
 2. Get the team's API key from the team admin. Developer members do not
    see the API Keys page, so the admin makes the key (with the team picked:
-   Settings, API Keys, Create API Key) and sends it privately. Keep it
+   Credentials, API Keys, Create API Key) and sends it privately. Keep it
    somewhere safe and never post it in a shared channel.
 3. Install Python 3.9 or newer.
    - Windows: `winget install Python.Python.3.12` in PowerShell, or the

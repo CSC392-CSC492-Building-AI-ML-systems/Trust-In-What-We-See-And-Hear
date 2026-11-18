@@ -184,7 +184,7 @@ def load_key(new_key: bool) -> str:
     if KEY_FILE.is_file() and not new_key:
         return KEY_FILE.read_text().strip()
     say("This needs the RunPod team's API key. Ask the team admin for it: Developer")
-    say("members cannot make one. (The admin makes it with the team picked: Settings,")
+    say("members cannot make one. (The admin makes it with the team picked: Credentials,")
     say("API Keys, Create API Key.) Paste it here; it is not shown as you paste.")
     key = getpass.getpass("RunPod API key: ").strip()
     if not key:
