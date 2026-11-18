@@ -2,7 +2,7 @@
 """Start, check and stop the team's GPU pod for the voice pipeline.
 
 Works on Windows, macOS and Linux with Python 3.9 or newer. It needs no extra
-packages, no SSH key and no folders set up beforehand. Run it from the
+packages and no folders or SSH keys set up beforehand. Run it from the
 repository's top folder:
 
     python voice-pipeline/dev/pod.py start     rent a GPU and set everything up
@@ -13,10 +13,13 @@ repository's top folder:
 On Windows, use `py` in place of `python` if `python` is not found.
 See voice-pipeline/dev/POD.md for the guide. `start --help` lists the options.
 
-It talks to RunPod's API (https://api.runpod.io/v2) with your RunPod API key,
-which it asks for the first time and keeps in a folder it makes in your home
-folder (.tiwwsah). Code and commands reach the pod through the same API, so
-no SSH is involved.
+It rents, checks and removes pods through RunPod's API
+(https://api.runpod.io/v2) with the team's RunPod API key, which it asks for
+the first time. The code reaches the pod over SSH, with a key the script
+makes for itself; that way the team's RunPod key can be a restricted one.
+(RunPod runs commands on a pod through its API only for keys with full
+access to the account.) Everything it keeps is in a folder it makes in your
+home folder (.tiwwsah).
 
 AI-assisted code (written with Claude Code), cited per the CSC398 AI policy.
 """
@@ -24,13 +27,15 @@ AI-assisted code (written with Claude Code), cited per the CSC398 AI policy.
 from __future__ import annotations
 
 import argparse
-import base64
 import getpass
 import hashlib
 import io
 import json
 import os
 import secrets
+import shlex
+import shutil
+import subprocess
 import sys
 import tarfile
 import time
@@ -42,6 +47,8 @@ API = "https://api.runpod.io/v2"
 REPO = Path(__file__).resolve().parents[2]
 STATE = Path.home() / ".tiwwsah"
 KEY_FILE = STATE / "runpod-api-key.txt"
+SSH_KEY = STATE / "pod-ssh-key"  # made by this script; its public half goes to each pod it starts
+LOG_MARK = "[voice-pipeline] "  # session.sh's lines in the pod's container log
 POD_NAME = "voice-pipeline-test"  # every pod this script makes has this name
 IMAGE = "runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404"
 MIN_CUDA = "12.8"  # the image needs a host with CUDA 12.8 or newer
@@ -143,29 +150,33 @@ class RunPod:
             raise PodError(f"RunPod could not read pod {pod_id} (HTTP {status}): {detail(parsed)}")
         return parsed
 
-    def run(self, pod_id: str, command: list[str], env: dict | None = None,
-            timeout: int = 20) -> dict:
-        """Run one command on the pod and return stdout, stderr and exitCode."""
-        body: dict = {"command": command, "timeoutSeconds": timeout, "cwd": "/root"}
-        if env:
-            body["env"] = env
-        for _ in range(40):
-            status, parsed = self.call("POST", f"/pods/{pod_id}/exec", body, timeout=timeout + 30)
-            if status == 200:
-                return parsed
-            if status in (409, 503):  # the container is still starting
-                time.sleep(5)
-                continue
-            if status == 403:
-                raise PodError(f"This API key is not allowed to run commands on pods. {KEY_HELP}")
-            raise PodError(f"RunPod could not run a command on the pod (HTTP {status}): {detail(parsed)}")
-        raise PodError("The pod did not accept commands for over 3 minutes.")
+    def log_lines(self, pod_id: str, tail: int = 300, wait: float = 4) -> list[str] | None:
+        """session.sh's progress lines from the pod's container log, or None.
 
-    def shell(self, pod_id: str, script: str, env: dict | None = None, timeout: int = 20) -> str:
-        result = self.run(pod_id, ["bash", "-c", script], env, timeout)
-        if result.get("exitCode") not in (0, None):
-            raise PodError(f"A command on the pod failed: {(result.get('stderr') or '').strip()[-500:]}")
-        return result.get("stdout") or ""
+        The log is a stream that stays open; it is read for `wait` seconds.
+        Any key that can read pods can do this, not only whoever started it.
+        """
+        request = urllib.request.Request(
+            f"{API}/pods/{pod_id}/logs?source=container&tail={tail}",
+            headers={"Authorization": f"Bearer {self.key}", "Accept": "text/event-stream",
+                     "User-Agent": "voice-pipeline-pod-script"})
+        lines: list[str] = []
+        try:
+            with urllib.request.urlopen(request, timeout=wait) as response:
+                for raw in response:
+                    text = raw.decode(errors="replace").strip()
+                    if text.startswith("data:"):
+                        try:
+                            line = json.loads(text[5:]).get("line", "")
+                        except ValueError:
+                            continue
+                        if LOG_MARK in line:
+                            lines.append(line.split(LOG_MARK, 1)[1])
+        except (TimeoutError, OSError):
+            pass  # the stream stays open: stopping here is how a read ends
+        except Exception:
+            return None
+        return lines
 
 
 def detail(parsed: object) -> str:
@@ -176,6 +187,66 @@ def detail(parsed: object) -> str:
             text += " " + json.dumps(errors)[:400]
         return str(text)
     return str(parsed)[:400]
+
+
+# ---------------------------------------------------------------- SSH
+
+def ssh_key() -> Path:
+    """This computer's key for reaching pods, made the first time it is needed."""
+    for tool in ("ssh", "ssh-keygen"):
+        if not shutil.which(tool):
+            raise PodError(
+                f"`{tool}` is not installed. On Windows 10 and 11 turn on OpenSSH Client in "
+                "Settings, System, Optional features. On macOS and Linux it comes with the system.")
+    if not SSH_KEY.is_file():
+        STATE.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "voice-pipeline-pod",
+                        "-f", str(SSH_KEY)], check=True, stdin=subprocess.DEVNULL)
+        if os.name == "nt":
+            # Windows ssh refuses a private key that other accounts can read.
+            subprocess.run(["icacls", str(SSH_KEY), "/inheritance:r", "/grant:r",
+                            f"{getpass.getuser()}:F"], check=False, capture_output=True)
+    return SSH_KEY
+
+
+class Remote:
+    """Commands on the pod over SSH, with this script's own key."""
+
+    def __init__(self, host: str, port: int, user: str, key: Path):
+        self.target = [f"{user}@{host}", "-p", str(port)]
+        self.key = key
+
+    def run(self, script: str, data: bytes | None = None, timeout: float = 120) -> str:
+        command = ["ssh", "-i", str(self.key), "-o", "IdentitiesOnly=yes",
+                   "-o", "StrictHostKeyChecking=no", "-o", f"UserKnownHostsFile={os.devnull}",
+                   "-o", "LogLevel=ERROR", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15",
+                   *self.target, script]
+        try:
+            done = subprocess.run(command, input=data if data is not None else b"",
+                                  capture_output=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            raise PodError("The pod did not answer over SSH in time.") from None
+        if done.returncode != 0:
+            raise PodError(f"A command on the pod failed: "
+                           f"{done.stderr.decode(errors='replace').strip()[-500:]}")
+        return done.stdout.decode(errors="replace")
+
+
+def connect(api: RunPod, pod_id: str, key: Path) -> Remote:
+    """Wait for the pod's SSH port and for sshd to let this key in."""
+    started = time.time()
+    while time.time() - started < 300:
+        pod = api.pod(pod_id) or {}
+        direct = (pod.get("ssh") or {}).get("direct")
+        if direct:
+            remote = Remote(direct["host"], direct["port"], direct.get("username") or "root", key)
+            try:
+                remote.run("true", timeout=30)
+                return remote
+            except PodError:
+                pass  # sshd is still starting
+        time.sleep(5)
+    raise PodError("Could not reach the pod over SSH for 5 minutes.")
 
 
 # ---------------------------------------------------------------- the API key
@@ -244,22 +315,16 @@ def make_archive() -> bytes:
     return buffer.getvalue()
 
 
-def upload(api: RunPod, pod_id: str, data: bytes, target: str) -> None:
-    """Send a file through the command API: base64 pieces, then checked."""
-    text = base64.b64encode(data).decode()
-    pieces = [text[i:i + 4000] for i in range(0, len(text), 4000)]
-    api.shell(pod_id, f"rm -f {target}.b64")
-    for start in range(0, len(pieces), 60):
-        batch = pieces[start:start + 60]
-        api.run(pod_id, ["bash", "-c", f'printf %s "$@" >> {target}.b64', "upload", *batch])
-    want = hashlib.sha256(data).hexdigest()
-    got = api.shell(pod_id, f"base64 -d < {target}.b64 > {target} && rm {target}.b64 "
-                            f"&& sha256sum {target}").split()[:1]
-    if got != [want]:
+def upload(remote: Remote, data: bytes, target: str) -> None:
+    """Copy bytes to a file on the pod, then check they arrived whole."""
+    remote.run(f"cat > {target}", data=data, timeout=600)
+    got = remote.run(f"sha256sum {target}").split()[:1]
+    if got != [hashlib.sha256(data).hexdigest()]:
         raise PodError("The upload to the pod came out damaged. Run start again.")
 
 
-def create_pod(api: RunPod, args: argparse.Namespace, token: str) -> tuple[dict, dict]:
+def create_pod(api: RunPod, args: argparse.Namespace, token: str,
+               public_key: str) -> tuple[dict, dict]:
     need_gb, disk = ENGINES[args.engine]
     options = candidates(api, need_gb, args.max_price, args.community)
     if not options:
@@ -295,7 +360,9 @@ def create_pod(api: RunPod, args: argparse.Namespace, token: str) -> tuple[dict,
         env["VLLM_UTIL"] = f"{min(0.85, LLM_GB / gpu['memory']):.2f}"
         body = {"name": pod_name(), "image": IMAGE,
                 "gpu": {"id": gpu["id"], "count": 1, "minCudaVersion": MIN_CUDA},
-                "cloud": gpu["cloud"], "disk": disk, "ports": ["8001/http"], "env": env}
+                "cloud": gpu["cloud"], "disk": disk, "ports": ["8001/http", "22/tcp"],
+                # The image puts PUBLIC_KEY in the pod's authorized_keys at boot.
+                "env": {**env, "PUBLIC_KEY": public_key}}
         say(f"Asking for a {gpu['name']} ({gpu['cloud'].lower()} cloud)...")
         status, parsed = api.call("POST", "/pods", body)
         if status in (200, 201, 202) and isinstance(parsed, dict) and parsed.get("id"):
@@ -307,26 +374,6 @@ def create_pod(api: RunPod, args: argparse.Namespace, token: str) -> tuple[dict,
         raise PodError(f"RunPod refused to create the pod (HTTP {status}): {detail(parsed)}")
     raise PodError("Every GPU that fits is taken right now. Try again in a few minutes, add "
                    "--community for the cheaper community cloud, or raise --max-price.")
-
-
-# Found on 2026-11-17: a Restricted key with Pods read and write could create
-# and delete pods but was refused when running commands on one.
-KEY_HELP = ("RunPod only lets keys with full access run commands on pods. The team admin "
-            "needs to make one: RunPod console, Credentials, API Keys, Create API Key, with "
-            "full access.")
-
-
-def check_key_can_run_commands(api: RunPod) -> None:
-    """Fail before renting if the key may not run commands on pods.
-
-    Asks to run a command on a pod that does not exist: a key without the
-    permission is refused (403) before RunPod looks for the pod (404).
-    """
-    status, parsed = api.call("POST", "/pods/no-such-pod-permission-check/exec",
-                              {"command": ["true"], "timeoutSeconds": 1})
-    if status == 403:
-        raise PodError(f"This API key is not allowed to run commands on pods, which the setup "
-                       f"needs. Nothing was rented. {KEY_HELP}")
 
 
 def earlier_pod(api: RunPod, mine: str) -> dict | None:
@@ -361,12 +408,12 @@ def wait_running(api: RunPod, pod_id: str) -> dict:
     raise PodError("The pod took over 15 minutes to boot.")
 
 
-def follow(api: RunPod, pod_id: str) -> str:
+def follow(remote: Remote) -> str:
     """Print the pod's progress until it is ready or failed. Returns the stage."""
     shown = 0
     began = quiet_since = time.time()
     while True:
-        out = api.shell(pod_id, "cat /root/stage 2>/dev/null; echo; cat /root/session.log 2>/dev/null")
+        out = remote.run("cat /root/stage 2>/dev/null; echo; cat /root/session.log 2>/dev/null")
         stage, _, log = out.partition("\n")
         lines = log.splitlines()
         for line in lines[shown:]:
@@ -431,9 +478,10 @@ def cmd_start(api: RunPod, args: argparse.Namespace) -> None:
         say("Use that one, or stop it first. (--another starts a second one, at a second price.)")
         return
 
-    check_key_can_run_commands(api)
+    key = ssh_key()
+    public_key = key.with_name(key.name + ".pub").read_text().strip()
     token = secrets.token_urlsafe(12)
-    pod, env = create_pod(api, args, token)
+    pod, env = create_pod(api, args, token, public_key)
     pod_id = pod["id"]
     if not args.another:
         first = earlier_pod(api, pod_id)
@@ -445,20 +493,23 @@ def cmd_start(api: RunPod, args: argparse.Namespace) -> None:
     try:
         say("Waiting for the pod to boot. This usually takes 1 to 3 minutes.")
         pod = wait_running(api, pod_id)
-        say("Waiting for the pod to accept commands...")
-        api.shell(pod_id, "mkdir -p /root/app")
+        say("Connecting to the pod over SSH...")
+        remote = connect(api, pod_id, key)
         say("Uploading the code...")
-        upload(api, pod_id, make_archive(), "/root/app.tar.gz")
-        api.shell(pod_id, "tar -xzf /root/app.tar.gz -C /root/app && rm /root/app.tar.gz")
+        remote.run("mkdir -p /root/app")
+        upload(remote, make_archive(), "/root/app.tar.gz")
+        remote.run("tar -xzf /root/app.tar.gz -C /root/app && rm /root/app.tar.gz")
         say(f"Uploading the voice recording {voice.name}...")
-        upload(api, pod_id, voice.read_bytes(), "/root/voice.wav")
+        upload(remote, voice.read_bytes(), "/root/voice.wav")
         say("Starting the setup on the pod. The whole thing takes 10 to 20 minutes;")
         say("progress is shown below. You can close this window at any time: the setup")
         say("carries on, and `status` shows where it is.")
         say()
-        api.shell(pod_id, "cd /root/app && setsid nohup bash voice-pipeline/dev/session.sh "
-                          "> /root/session.log 2>&1 < /dev/null & echo started", env=env)
-        stage = follow(api, pod_id)
+        # An SSH session does not see the pod's own settings, so they are passed here.
+        settings = " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items())
+        remote.run(f"cd /root/app && {settings} setsid nohup bash voice-pipeline/dev/session.sh "
+                   "> /root/session.log 2>&1 < /dev/null & echo started")
+        stage = follow(remote)
     except KeyboardInterrupt:
         say()
         say(f"Stopped watching. Pod {pod_id} keeps going and billing.")
@@ -483,6 +534,16 @@ def cmd_start(api: RunPod, args: argparse.Namespace) -> None:
 
 # ---------------------------------------------------------------- status, logs, stop
 
+def server_ready(pod_id: str) -> bool:
+    """The call server answers on its public address (anyone can check this)."""
+    try:
+        with urllib.request.urlopen(f"https://{pod_id}-8001.proxy.runpod.net/health",
+                                    timeout=10) as response:
+            return response.status == 200
+    except Exception:
+        return False
+
+
 def show_pod(api: RunPod, pod: dict) -> None:
     pod = api.pod(pod["id"]) or pod
     env = pod.get("env") or {}
@@ -491,19 +552,19 @@ def show_pod(api: RunPod, pod: dict) -> None:
         f"${float(pod.get('cost') or 0):.2f}/h, created {pod.get('createdAt', '?')}")
     if pod.get("status") != "RUNNING":
         return
-    try:
-        out = api.shell(pod["id"], "cat /root/stage 2>/dev/null; echo; tail -n 3 /root/session.log 2>/dev/null")
-    except PodError as e:
-        say(f"  (could not ask the pod how it is doing: {e})")
-        return
-    stage, _, last = out.partition("\n")
-    stage = stage.strip() or "not started"
-    say(f"  setup: {stage}")
-    for line in last.splitlines():
-        say("    " + line)
     token = env.get("PIPELINE_DEV_TOKEN")
-    if stage == "ready" and token:
-        say(f"  make a call: {call_link(pod['id'], token)}")
+    if server_ready(pod["id"]):
+        say("  setup: ready")
+        if token:
+            say(f"  make a call: {call_link(pod['id'], token)}")
+        return
+    lines = api.log_lines(pod["id"])
+    if lines:
+        say("  setup: in progress. Latest:")
+        for line in lines[-3:]:
+            say("    " + line)
+    else:
+        say("  setup: in progress (no progress lines yet)")
 
 
 def cmd_status(api: RunPod, args: argparse.Namespace) -> None:
@@ -520,12 +581,13 @@ def cmd_logs(api: RunPod, args: argparse.Namespace) -> None:
     if not pods:
         say("No running pod.")
         return
-    files = ["/root/session.log"] + (["/root/setup.log", "/root/vllm.log", "/root/server.log"]
-                                     if args.all else [])
     for pod in pods:
-        for name in files:
-            say(f"===== {pod['id']} {name} (last {args.lines} lines)")
-            say(api.shell(pod["id"], f"tail -n {args.lines} {name} 2>/dev/null || echo '(none yet)'"))
+        lines = api.log_lines(pod["id"], tail=2000)
+        say(f"===== pod {pod['id']} (last {args.lines} lines)")
+        if lines is None:
+            say("(RunPod did not return the pod's log)")
+        for line in (lines or [])[-args.lines:]:
+            say(line)
 
 
 def terminate(api: RunPod, pod_id: str) -> None:
@@ -583,7 +645,6 @@ def main() -> None:
 
     sub.add_parser("status", help="show the team's pod, its progress and its links")
     logs = sub.add_parser("logs", help="show what the pod has been doing")
-    logs.add_argument("--all", action="store_true", help="also the install, LLM and server logs")
     logs.add_argument("--lines", type=int, default=60)
     stop = sub.add_parser("stop", help="terminate the pod so it stops billing")
     stop.add_argument("--yes", action="store_true", help="do not ask first")

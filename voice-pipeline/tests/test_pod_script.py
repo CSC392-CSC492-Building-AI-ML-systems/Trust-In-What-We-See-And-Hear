@@ -1,9 +1,8 @@
-"""dev/pod.py against a fake RunPod API: choosing a GPU, uploading, starting.
+"""dev/pod.py against a fake RunPod API and a fake SSH connection.
 
 AI-assisted code (written with Claude Code), cited per the CSC398 AI policy.
 """
 
-import base64
 import importlib.util
 import io
 import subprocess
@@ -44,7 +43,6 @@ class FakeAPI(pod.RunPod):
         self.pods = list(pods)
         self.created = []
         self.files = {}
-        self.no_exec = False
 
     def call(self, method, path, body=None, timeout=60):
         if path.startswith("/catalog/gpus"):
@@ -56,17 +54,21 @@ class FakeAPI(pod.RunPod):
             return 201, {"id": "pod123", **body}
         if method == "GET" and path == "/pods":
             return 200, {"pods": self.pods}
-        if method == "POST" and path.endswith("/exec"):
-            if "no-such-pod" in path:
-                return (403 if self.no_exec else 404), {"detail": "..."}
-            return 200, self.exec(body["command"])
         raise AssertionError(f"unexpected {method} {path}")
 
-    def exec(self, command):
-        """Runs the upload's shell commands for real, in a temporary folder."""
-        script = command[2].replace("/root/", str(self.root) + "/")
-        done = subprocess.run(["bash", "-c", script, *command[3:]], capture_output=True, text=True)
-        return {"stdout": done.stdout, "stderr": done.stderr, "exitCode": done.returncode}
+
+class LocalRemote(pod.Remote):
+    """Runs the pod's commands for real, in a temporary folder standing in for /root."""
+
+    def __init__(self, root):
+        self.root = root
+
+    def run(self, script, data=None, timeout=120):
+        script = script.replace("/root/", str(self.root) + "/")
+        done = subprocess.run(["bash", "-c", script], input=data or b"", capture_output=True)
+        if done.returncode:
+            raise pod.PodError(done.stderr.decode())
+        return done.stdout.decode()
 
 
 def start_args(**kw):
@@ -87,7 +89,7 @@ def test_gpus_that_fit_are_ranked_in_stock_first_then_by_price():
 
 def test_create_moves_on_when_a_gpu_is_taken():
     api = FakeAPI(refuse={"NVIDIA RTX 6000 Ada Generation"})
-    created, env = pod.create_pod(api, start_args(), "tok")
+    created, env = pod.create_pod(api, start_args(), "tok", "ssh-ed25519 AAAA test")
     assert created["gpu"]["id"] == "NVIDIA RTX PRO 6000 Blackwell Server Edition"
     first, second = api.created
     assert first["gpu"] == {"id": "NVIDIA RTX 6000 Ada Generation", "count": 1, "minCudaVersion": "12.8"}
@@ -96,18 +98,20 @@ def test_create_moves_on_when_a_gpu_is_taken():
     # A Blackwell card cannot run FP8 here: setup.sh picks the model itself.
     assert "LLM_MODEL" not in second["env"]
     assert second["env"]["PIPELINE_DEV_TOKEN"] == "tok"
-    assert second["ports"] == ["8001/http"] and second["disk"] == 70
+    assert second["ports"] == ["8001/http", "22/tcp"] and second["disk"] == 70
+    assert second["env"]["PUBLIC_KEY"] == "ssh-ed25519 AAAA test"  # how SSH gets in
+    assert "PUBLIC_KEY" not in env  # passed to the setup separately: it is not a setting
 
 
 def test_create_gives_up_with_advice_when_everything_is_taken():
     api = FakeAPI(refuse={g["id"] for g in CATALOG})
     with pytest.raises(pod.PodError, match="Every GPU that fits is taken"):
-        pod.create_pod(api, start_args(), "tok")
+        pod.create_pod(api, start_args(), "tok", "key")
 
 
 def test_drama_asks_for_an_80_gb_card_and_more_disk():
     api = FakeAPI()
-    created, _ = pod.create_pod(api, start_args(engine="drama"), "tok")
+    created, _ = pod.create_pod(api, start_args(engine="drama"), "tok", "key")
     assert created["gpu"]["id"] == "NVIDIA RTX PRO 6000 Blackwell Server Edition"
     assert created["disk"] == 150
 
@@ -129,14 +133,34 @@ def test_the_archive_has_the_code_and_no_environments():
     assert not [n for n in names if "__pycache__" in n or ".venv" in n or "\\" in n]
 
 
-def test_upload_arrives_whole_in_several_pieces(tmp_path):
-    api = FakeAPI()
-    api.root = tmp_path
-    data = bytes(range(256)) * 2000  # 512 KB: several requests of pieces
-    pod.upload(api, "pod123", data, "/root/thing.bin")
+def test_upload_arrives_whole(tmp_path):
+    data = bytes(range(256)) * 2000
+    pod.upload(LocalRemote(tmp_path), data, "/root/thing.bin")
     assert (tmp_path / "thing.bin").read_bytes() == data
-    assert not (tmp_path / "thing.bin.b64").exists()
-    assert len(base64.b64encode(data)) > 4000 * 60  # it did take more than one request
+
+
+def test_a_damaged_upload_is_caught(tmp_path):
+    class Lossy(LocalRemote):
+        def run(self, script, data=None, timeout=120):
+            return super().run(script, data[:-1] if data else data, timeout)
+    with pytest.raises(pod.PodError, match="damaged"):
+        pod.upload(Lossy(tmp_path), b"0123456789", "/root/thing.bin")
+
+
+def test_progress_lines_are_read_from_the_container_log(monkeypatch):
+    stream = [b'id: 1\n', b'data: {"source":"container","line":"some other output"}\n',
+              b'data: {"source":"container","line":"[voice-pipeline] [20:01:02] Step 1 of 3"}\n',
+              b'data: not json\n']
+
+    class Stream:
+        def __enter__(self):
+            return iter(stream)
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(pod.urllib.request, "urlopen", lambda request, timeout: Stream())
+    assert pod.RunPod("key").log_lines("pod123") == ["[20:01:02] Step 1 of 3"]
 
 
 def test_of_two_starts_at_once_only_the_earlier_pod_stays():
@@ -149,14 +173,17 @@ def test_of_two_starts_at_once_only_the_earlier_pod_stays():
     assert pod.earlier_pod(api, "a1") is None          # the earlier one stays
 
 
-def test_a_key_that_cannot_run_commands_is_caught_before_renting(tmp_path):
-    api = FakeAPI()
-    api.no_exec = True
-    (tmp_path / "v.wav").write_bytes(b"RIFF....WAVE")
-    with pytest.raises(pod.PodError, match="Nothing was rented"):
-        pod.cmd_start(api, start_args(voice=str(tmp_path / "v.wav")))
-    assert api.created == []
+def test_ssh_uses_only_the_scripts_own_key_and_skips_host_prompts(monkeypatch, tmp_path):
+    seen = {}
 
+    def fake_run(command, input, capture_output, timeout):
+        seen["command"] = command
+        return subprocess.CompletedProcess(command, 0, b"hello\n", b"")
 
-def test_a_key_that_can_run_commands_passes_the_check():
-    pod.check_key_can_run_commands(FakeAPI())  # 404 for the made-up pod: allowed
+    monkeypatch.setattr(pod.subprocess, "run", fake_run)
+    remote = pod.Remote("1.2.3.4", 40022, "root", tmp_path / "key")
+    assert remote.run("echo hello") == "hello\n"
+    command = seen["command"]
+    assert command[:3] == ["ssh", "-i", str(tmp_path / "key")]
+    assert "IdentitiesOnly=yes" in command and "StrictHostKeyChecking=no" in command
+    assert command[-4:] == ["root@1.2.3.4", "-p", "40022", "echo hello"]

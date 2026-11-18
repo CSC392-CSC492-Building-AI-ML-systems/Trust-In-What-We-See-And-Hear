@@ -5,7 +5,8 @@
 #   2. starts the call server with the browser test pages (run.sh)
 #   3. terminates the pod after IDLE_MINUTES without a call, so a forgotten
 #      pod stops billing
-# Progress, in plain words, goes to /root/session.log (pod.py shows it). The
+# Progress, in plain words, goes to /root/session.log and the container log
+# (pod.py shows it). The
 # current step is in /root/stage: setup, server, ready or failed.
 #
 # Settings (pod.py sets them): PIPELINE_DEV_TOKEN, TTS_ENGINE, LLM_MODEL,
@@ -20,7 +21,13 @@ ENGINE=${TTS_ENGINE:-chatterbox}
 STEPS=3; [ "$ENGINE" = chatterbox ] || STEPS=4
 VOICE=/root/voice.wav
 
-say() { echo "[$(date -u +%H:%M:%S)] $*"; }
+# Each line goes to session.log and to the pod's container log, which RunPod's
+# API serves to any teammate's key (pod.py status and logs read it there).
+say() {
+  local line="[$(date -u +%H:%M:%S)] $*"
+  echo "$line"
+  echo "[voice-pipeline] $line" > /proc/1/fd/1 2>/dev/null || true
+}
 stage() { echo "$1" > /root/stage; }
 size_gb() { du -sm "$@" 2>/dev/null | awk '{s+=$1} END {printf "%.1f", s/1024}'; }
 
@@ -67,7 +74,7 @@ fail() {
   stage failed
   say "FAILED: $1"
   say "The last lines of $2:"
-  tail -n 25 "$2" | sed 's/^/    /'
+  tail -n 25 "$2" | while IFS= read -r l; do say "    $l"; done
   say "The pod shuts itself down in $IDLE_MINUTES minutes. To stop it now: python voice-pipeline/dev/pod.py stop"
   wait
   exit 1

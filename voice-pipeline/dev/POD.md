@@ -9,8 +9,9 @@ a large GPU. We rent one from RunPod by the hour, on the team's RunPod
 account. One script rents the GPU, sets everything up and gives you a link
 you can open in a browser to make test calls. The same script stops it.
 
-It works on Windows, macOS and Linux. You do not need SSH keys, Docker or
-anything installed apart from Python.
+It works on Windows, macOS and Linux. You need Python and the `ssh` command,
+which macOS, Linux and Windows 10 and 11 already have. You do not need to
+make or register SSH keys: the script makes its own.
 
 ## What it costs
 
@@ -29,10 +30,10 @@ you are done.
    console, pick the team in the account menu at the top left.
 2. Get the team's API key from the team admin. Developer members do not
    see the API Keys page, so the admin makes the key (with the team picked:
-   Credentials, API Keys, Create API Key) and sends it privately. It has
-   to be a key with full access: RunPod refuses to run commands on pods
-   with a restricted key, even one allowed to create pods. Keep it
-   somewhere safe and never post it in a shared channel.
+   Credentials, API Keys, Create API Key) and sends it privately. A
+   restricted key is enough: under REST API, Pods read and write, Catalog
+   read and Account read. Keep it somewhere safe and never post it in a
+   shared channel.
 3. Install Python 3.9 or newer.
    - Windows: `winget install Python.Python.3.12` in PowerShell, or the
      installer from python.org (tick "Add python.exe to PATH"). Check it with
@@ -141,7 +142,8 @@ each call) needs the backend's call endpoints (PR #15) first.
 | What you see | What to do |
 |---|---|
 | "Every GPU that fits is taken right now" | Stock changes by the minute. Try again, add `--community`, or raise `--max-price` |
-| "not allowed to run commands on pods" | The key is restricted. The admin makes a key with full access |
+| "`ssh` is not installed" (Windows) | Settings, System, Optional features, add OpenSSH Client |
+| "Could not reach the pod over SSH" | Usually a slow start. Run `stop`, then `start` again; if it repeats, send the output to the team |
 | "RunPod refused the API key (401)" | `pod.py --new-key start` and paste a key made with the team picked |
 | "Python could not check RunPod's HTTPS certificate" (Mac) | Run `Install Certificates.command` in the Python folder under Applications |
 | "is not really a WAV file inside" | The recording is another format renamed to .wav. Convert it: `afconvert -f WAVE -d LEI16@24000 -c 1 in.m4a voice.wav` (macOS) or `ffmpeg -i in.m4a -ar 24000 -ac 1 voice.wav` (Windows) |
@@ -161,14 +163,18 @@ or stop without asking.
 ## How it works
 
 `dev/pod.py` runs on your computer. It reads the GPU list and prices from
-RunPod, rents the cheapest card in stock that fits, uploads the code
-through RunPod's API (no SSH), and starts `dev/session.sh` on the pod.
+RunPod and rents the cheapest card in stock that fits, through RunPod's API
+with the team's key. It then uploads the code and starts `dev/session.sh`
+on the pod over SSH, with a key it made for itself in the `.tiwwsah` folder
+in your home folder. Its public half is given to each pod when it is created.
+(RunPod can run commands on a pod through its API too, but only for keys with
+full access to the account, which we do not want to share.)
 
 `dev/session.sh` runs on the pod. It calls `pod/setup.sh` (installs
 everything, downloads and starts the LLM, and with `ming` or `drama` runs
 `pod/voice_engine.sh`), then `pod/run.sh` (the call server, with the test page
-`dev/call.html`). It writes its progress to `/root/session.log`, which is what
-`start` and `logs` show. It also terminates the pod once nobody has called
+`dev/call.html`). It writes its progress to `/root/session.log` and to the
+pod's log in RunPod, which is what `status` and `logs` show to any teammate. It also terminates the pod once nobody has called
 for the idle time, or when setup failed and nobody stopped the pod.
 
 AI-assisted documentation (written with Claude Code), cited per the CSC398 AI
