@@ -109,7 +109,13 @@ while kill -0 $SETUP 2>/dev/null; do
     last_report=$SECONDS
     case $step in
       1) say "  still installing: $(size_gb /root/venvs) GB of packages so far" ;;
-      2) say "  still loading the language model: $(size_gb /root/hf) GB downloaded so far" ;;
+      2) now=$(size_gb /root/hf)
+         if [ "$now" = "${last_size:-}" ] && [ "$now" != 0.0 ]; then
+           say "  downloaded ($now GB); loading it onto the GPU"
+         else
+           say "  still downloading the language model: $now GB so far"
+         fi
+         last_size=$now ;;
       3) [ "$ENGINE" != chatterbox ] && say "  still setting up the voice engine ($(size_gb /root/venvs /root/hf) GB on disk)" ;;
     esac
   fi

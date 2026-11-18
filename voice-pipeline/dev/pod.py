@@ -422,12 +422,35 @@ def wait_running(api: RunPod, pod_id: str) -> dict:
     raise PodError("The pod took over 15 minutes to boot.")
 
 
+def launch_command(env: dict) -> str:
+    """The command that starts session.sh on the pod and returns at once.
+
+    An SSH session does not see the pod's own settings, so they are passed
+    here. Only session.sh goes to the background: `a && b &` would put the
+    whole list there, still attached to the connection, and SSH would wait
+    for it (that hung the first real runs on 2026-11-17).
+    """
+    settings = " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items())
+    return (f"cd /root/app || exit 1; {settings} setsid nohup bash voice-pipeline/dev/session.sh "
+            "> /root/session.log 2>&1 < /dev/null & echo started")
+
+
 def follow(remote: Remote) -> str:
     """Print the pod's progress until it is ready or failed. Returns the stage."""
     shown = 0
+    misses = 0
     began = quiet_since = time.time()
     while True:
-        out = remote.run("cat /root/stage 2>/dev/null; echo; cat /root/session.log 2>/dev/null")
+        try:
+            out = remote.run("cat /root/stage 2>/dev/null; echo; cat /root/session.log 2>/dev/null",
+                             timeout=60)
+            misses = 0
+        except PodError:
+            misses += 1  # a slow answer now and then is fine
+            if misses >= 5:
+                raise PodError("lost contact with the pod over SSH") from None
+            time.sleep(10)
+            continue
         stage, _, log = out.partition("\n")
         lines = log.splitlines()
         for line in lines[shown:]:
@@ -519,15 +542,10 @@ def cmd_start(api: RunPod, args: argparse.Namespace) -> None:
         say("progress is shown below. You can close this window at any time: the setup")
         say("carries on, and `status` shows where it is.")
         say()
-        # An SSH session does not see the pod's own settings, so they are passed here.
-        settings = " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items())
-        remote.run(f"cd /root/app && {settings} setsid nohup bash voice-pipeline/dev/session.sh "
-                   "> /root/session.log 2>&1 < /dev/null & echo started")
-        stage = follow(remote)
+        remote.run(launch_command(env))
     except KeyboardInterrupt:
         say()
-        say(f"Stopped watching. Pod {pod_id} keeps going and billing.")
-        say("  python voice-pipeline/dev/pod.py status   shows how it is doing")
+        say(f"Stopped. Pod {pod_id} is still running and billing.")
         say("  python voice-pipeline/dev/pod.py stop     terminates it")
         return
     except PodError:
@@ -535,6 +553,17 @@ def cmd_start(api: RunPod, args: argparse.Namespace) -> None:
         if args.yes or ask_yes("Terminate it now so it stops billing?", True):
             terminate(api, pod_id)
         raise
+    # From here the setup runs on the pod by itself: losing touch with it
+    # here is no reason to remove a pod that is setting up fine.
+    try:
+        stage = follow(remote)
+    except (KeyboardInterrupt, PodError) as e:
+        say()
+        say(f"Stopped watching{': ' + str(e) if isinstance(e, PodError) else ''}.")
+        say(f"The setup carries on on pod {pod_id}, and it keeps billing.")
+        say("  python voice-pipeline/dev/pod.py status   shows how it is doing, and the link when ready")
+        say("  python voice-pipeline/dev/pod.py stop     terminates it")
+        return
     if stage == "ready":
         show_ready(api.pod(pod_id) or pod, token)
     else:

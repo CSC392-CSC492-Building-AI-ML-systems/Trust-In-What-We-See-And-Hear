@@ -7,6 +7,7 @@ import importlib.util
 import io
 import subprocess
 import tarfile
+import time
 from argparse import Namespace
 from pathlib import Path
 
@@ -193,3 +194,25 @@ def test_ssh_uses_only_the_scripts_own_key_and_skips_host_prompts(monkeypatch, t
     assert command[:3] == ["ssh", "-i", str(tmp_path / "key")]
     assert "IdentitiesOnly=yes" in command and "StrictHostKeyChecking=no" in command
     assert command[-4:] == ["root@1.2.3.4", "-p", "40022", "echo hello"]
+
+
+def test_the_launch_returns_at_once_while_the_setup_keeps_running(tmp_path, monkeypatch):
+    # Captured output works like SSH: the call ends only when nothing holds
+    # the connection's output open. A setup that keeps running must not.
+    (tmp_path / "app" / "voice-pipeline" / "dev").mkdir(parents=True)
+    (tmp_path / "app" / "voice-pipeline" / "dev" / "session.sh").write_text(
+        'echo "$PIPELINE_DEV_TOKEN" > ../token; sleep 30\n')
+    shim = tmp_path / "bin"  # setsid is Linux-only; on macOS a stand-in runs the command
+    shim.mkdir()
+    (shim / "setsid").write_text('#!/bin/sh\nexec "$@"\n')
+    (shim / "setsid").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{shim}:{pod.os.environ['PATH']}")
+    remote = LocalRemote(tmp_path)
+    started = time.time()
+    assert remote.run(pod.launch_command({"PIPELINE_DEV_TOKEN": "a b'c"})).strip() == "started"
+    assert time.time() - started < 5
+    for _ in range(50):  # the setup got its settings, quotes and all
+        if (tmp_path / "token").is_file() and (tmp_path / "token").read_text().strip():
+            break
+        time.sleep(0.1)
+    assert (tmp_path / "token").read_text().strip() == "a b'c"
