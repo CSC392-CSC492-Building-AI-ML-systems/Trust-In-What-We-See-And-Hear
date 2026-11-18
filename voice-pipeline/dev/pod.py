@@ -395,7 +395,12 @@ def cmd_start(api: RunPod, args: argparse.Namespace) -> None:
     if not voice.is_file():
         raise PodError(f"{voice} does not exist.")
     if voice.read_bytes()[:4] != b"RIFF":
-        raise PodError(f"{voice} is not a WAV file. The voice samples the app stores are WAV files.")
+        raise PodError(
+            f"{voice} is not really a WAV file inside (renaming a recording to .wav does not "
+            "convert it). Convert it first.\n"
+            f'  macOS:   afconvert -f WAVE -d LEI16@24000 -c 1 "{voice}" voice.wav\n'
+            f'  Windows: ffmpeg -i "{voice}" -ar 24000 -ac 1 voice.wav   (ffmpeg: winget install ffmpeg)\n'
+            "Or record in Audacity and use File, Export, Export as WAV.")
     existing = [p for p in api.our_pods() if p.get("status") not in ("TERMINATED",)]
     if existing and not args.another:
         say("A pod is already running for the team, so none was started:")

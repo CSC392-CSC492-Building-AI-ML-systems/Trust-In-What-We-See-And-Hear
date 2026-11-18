@@ -141,6 +141,7 @@ each call) needs the backend's call endpoints (PR #15) first.
 | "Every GPU that fits is taken right now" | Stock changes by the minute. Try again, add `--community`, or raise `--max-price` |
 | "RunPod refused the API key (401)" | `pod.py --new-key start` and paste a key made with the team picked |
 | "Python could not check RunPod's HTTPS certificate" (Mac) | Run `Install Certificates.command` in the Python folder under Applications |
+| "is not really a WAV file inside" | The recording is another format renamed to .wav. Convert it: `afconvert -f WAVE -d LEI16@24000 -c 1 in.m4a voice.wav` (macOS) or `ffmpeg -i in.m4a -ar 24000 -ac 1 voice.wav` (Windows) |
 | "unrecognized arguments" | A path with spaces needs quotes: `--voice "C:\My Files\voice.wav"` |
 | `py` or `python3` is not found | Python is not installed or not on PATH; see step 3 above |
 | "The setup failed" | The reason and the last log lines are printed above it. Send them to the team; the script offers to stop the pod |
