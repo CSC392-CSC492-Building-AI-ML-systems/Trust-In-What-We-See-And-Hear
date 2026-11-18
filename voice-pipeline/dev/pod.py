@@ -673,10 +673,10 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command", required=True)
 
     start = sub.add_parser("start", help="rent a GPU and set up the voice pipeline on it")
-    start.add_argument("--engine", choices=sorted(ENGINES), default="chatterbox",
-                       help="voice engine (default chatterbox; drama needs an 80 GB GPU)")
-    # Until the pod runs with the backend (PR #15), it has no other way to
-    # get the voice: the app's recordings live in the backend's storage.
+    start.add_argument("--engine", choices=sorted(ENGINES), default="ming",
+                       help="voice engine (default ming; drama needs an 80 GB GPU)")
+    # Until this script can start the pod with the backend, it has no other
+    # way to get the voice: the app's recordings live in the backend's storage.
     start.add_argument("--voice", required=True,
                        help="WAV recording of the voice to clone, at least 5 seconds (required)")
     start.add_argument("--llm", help=f"LLM to serve (default {LLM_FOR_CARD})")

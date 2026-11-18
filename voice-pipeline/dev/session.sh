@@ -16,7 +16,7 @@
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 IDLE_MINUTES=${IDLE_MINUTES:-30}
-ENGINE=${TTS_ENGINE:-chatterbox}
+ENGINE=${TTS_ENGINE:-ming}
 # Chatterbox runs inside the call server; the others need a step of their own.
 STEPS=3; [ "$ENGINE" = chatterbox ] || STEPS=4
 VOICE=/root/voice.wav
