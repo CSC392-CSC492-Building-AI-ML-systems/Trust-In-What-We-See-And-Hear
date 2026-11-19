@@ -1,6 +1,7 @@
 // Run the whole stack natively: `npm run dev` (after `npm run setup`).
 //
-// Makes sure the local Supabase stack is up, migrated and has its demo data, then runs the frontend,
+// Makes sure the local Supabase stack is up, migrated and has its demo data (skipped with
+// `npm run dev -- --no-demo-data`), then runs the frontend,
 // backend and mock voice pipeline together with prefixed output. Ctrl+C stops all three; Supabase
 // keeps running (`npm run supabase stop` stops it).
 //

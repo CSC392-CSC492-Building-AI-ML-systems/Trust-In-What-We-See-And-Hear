@@ -4,7 +4,7 @@ Next.js frontend for the browser-based scam-awareness simulator.
 
 ## Run locally
 
-To run the whole stack (frontend, backend, local Supabase), follow
+To run the whole stack (frontend, backend, mock voice pipeline and local Supabase), follow
 [Local development](../../README.md#local-development) in the root README.
 
 To run only the frontend, from this folder:

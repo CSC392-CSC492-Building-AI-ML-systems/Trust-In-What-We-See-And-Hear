@@ -13,7 +13,10 @@ pipeline (speech to text, LLM, cloned voice) is being ported in.
 
 ## Run the mock
 
-It only needs FastAPI, so the backend's environment works:
+`npm run dev` and `npm run docker` at the repository root start the mock along with everything
+else, and point the backend at it (see [Local development](../README.md#local-development)).
+
+To run it on its own: it only needs FastAPI, so the backend's environment works:
 
 ```bash
 cd backend

@@ -1,7 +1,7 @@
 // Run the whole stack in Docker: `npm run docker`. Needs nothing installed besides Docker and Node.
 //
 // Starts the local Supabase stack with the CLI version pinned in package.json, applies new
-// migrations and restores the demo data, then runs
+// migrations and restores the demo data (unless given --no-demo-data), then runs
 //   docker compose up --build --watch --force-recreate
 // with the stack's own keys.
 //
