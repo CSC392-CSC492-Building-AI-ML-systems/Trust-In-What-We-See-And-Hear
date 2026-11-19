@@ -17,6 +17,7 @@ import {
   fail,
   loadRootEnv,
   npm,
+  parseOptions,
   port,
   prepareSupabase,
   run,
@@ -27,6 +28,7 @@ import {
 const MIN_COMPOSE = [2, 25];
 
 checkNode();
+const { demoData } = parseOptions();
 loadRootEnv();
 port("BACKEND_PORT", "8000");
 port("PIPELINE_PORT", "8001");
@@ -38,7 +40,7 @@ const supabase = (args, options) =>
   npm(["exec", "--yes", "--", `supabase@${devDependencies.supabase}`, ...args], options);
 
 step("Starting the local Supabase stack and applying new migrations (the first run downloads its Docker images)");
-prepareSupabase(supabase);
+prepareSupabase(supabase, { demoData });
 const status = supabaseStatus(supabase);
 
 step("Starting the frontend, backend and pipeline mock (Ctrl+C stops them)");

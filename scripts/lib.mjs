@@ -10,7 +10,7 @@ import { createRequire } from "node:module";
 import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseEnv } from "node:util";
+import { parseArgs, parseEnv } from "node:util";
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const FRONTEND_DIR = path.join(ROOT, "frontend", "tiwwsah_webapp");
@@ -49,6 +49,19 @@ export function loadRootEnv() {
   const values = parseEnv(readFileSync(file, "utf8"));
   for (const name of ["BACKEND_PORT", "PIPELINE_PORT"]) {
     if (values[name] !== undefined) process.env[name] ??= values[name];
+  }
+}
+
+/**
+ * The options `npm run setup|dev|docker -- ...` accept. Only --no-demo-data, which skips loading
+ * supabase/local-dev-data.sql (data loaded earlier stays until `supabase db reset`).
+ */
+export function parseOptions() {
+  try {
+    const { values } = parseArgs({ options: { "no-demo-data": { type: "boolean" } } });
+    return { demoData: !values["no-demo-data"] };
+  } catch (error) {
+    fail(`${error.message}\nThe only option is --no-demo-data, e.g. \`npm run dev -- --no-demo-data\`.`);
   }
 }
 
@@ -166,10 +179,11 @@ export function supabase(args, options) {
 
 /**
  * Start the local stack, apply migrations it has not seen (e.g. after a pull) and restore the demo
- * data. `cli` runs the Supabase CLI. Migration or demo data problems only warn: a database that is
- * ahead of this branch after switching branches is normal and should not block starting.
+ * data unless `demoData` is false. `cli` runs the Supabase CLI. Migration or demo data problems
+ * only warn: a database that is ahead of this branch after switching branches is normal and should
+ * not block starting.
  */
-export function prepareSupabase(cli, { showStartOutput = false } = {}) {
+export function prepareSupabase(cli, { showStartOutput = false, demoData = true } = {}) {
   cli(["start"], { capture: !showStartOutput });
   if (cli(["migration", "up", "--include-all"], { capture: true, allowFailure: true }) === null) {
     console.warn(
@@ -177,8 +191,9 @@ export function prepareSupabase(cli, { showStartOutput = false } = {}) {
         "`supabase db reset` rebuilds the local database from this branch.",
     );
   }
-  const demoData = ["db", "query", "--file", path.join("supabase", "local-dev-data.sql")];
-  if (cli(demoData, { capture: true, allowFailure: true }) === null) {
+  if (!demoData) return;
+  const load = ["db", "query", "--file", path.join("supabase", "local-dev-data.sql")];
+  if (cli(load, { capture: true, allowFailure: true }) === null) {
     console.warn("\n⚠ Could not load the local demo data (see above).");
   }
 }

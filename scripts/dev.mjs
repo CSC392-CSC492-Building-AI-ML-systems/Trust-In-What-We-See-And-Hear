@@ -19,6 +19,7 @@ import {
   checkPortsFree,
   fail,
   loadRootEnv,
+  parseOptions,
   port,
   prepareSupabase,
   step,
@@ -26,6 +27,7 @@ import {
 } from "./lib.mjs";
 
 checkNode();
+const { demoData } = parseOptions();
 loadRootEnv();
 const backendPort = port("BACKEND_PORT", "8000");
 const pipelinePort = port("PIPELINE_PORT", "8001");
@@ -43,7 +45,7 @@ await checkPortsFree(devPorts);
 checkDocker();
 
 step("Starting the local Supabase stack and applying new migrations");
-prepareSupabase(supabase);
+prepareSupabase(supabase, { demoData });
 // Again, in case Supabase has just taken one of them.
 await checkPortsFree(devPorts);
 

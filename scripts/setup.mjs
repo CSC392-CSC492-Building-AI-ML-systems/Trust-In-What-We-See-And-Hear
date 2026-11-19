@@ -17,6 +17,7 @@ import {
   has,
   loadRootEnv,
   npm,
+  parseOptions,
   port,
   prepareSupabase,
   run,
@@ -26,6 +27,7 @@ import {
 } from "./lib.mjs";
 
 checkNode();
+const { demoData } = parseOptions();
 loadRootEnv();
 const backendPort = port("BACKEND_PORT", "8000");
 const pipelinePort = port("PIPELINE_PORT", "8001");
@@ -45,7 +47,7 @@ step("Installing backend dependencies (uv installs Python 3.14 if needed)");
 run("uv", ["sync"], { cwd: BACKEND_DIR });
 
 step("Starting the local Supabase stack (the first run downloads its Docker images)");
-prepareSupabase(supabase, { showStartOutput: true });
+prepareSupabase(supabase, { showStartOutput: true, demoData });
 const status = supabaseStatus(supabase);
 
 step("Creating env files");
