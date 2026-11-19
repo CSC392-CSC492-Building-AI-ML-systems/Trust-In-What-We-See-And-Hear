@@ -46,9 +46,9 @@ Supabase CLI). Nothing else, and no `npm install` first.
 npm run docker
 ```
 
-This starts Supabase (`npx --yes supabase@3.1.0 start`, the CLI version pinned in `package.json`)
-and then `docker compose up --build --watch --force-recreate`, which you can also run yourself
-once Supabase is up.
+This starts Supabase with the CLI version pinned in `package.json`, and then runs
+`docker compose up --build --watch --force-recreate`, which you can also run yourself once
+Supabase is up.
 
 Edits to the source are synced into the containers and reload the servers. Changing a
 `package.json`, `package-lock.json`, `pyproject.toml` or `uv.lock` rebuilds the image. Ctrl+C
@@ -65,7 +65,28 @@ used.
 | Supabase Studio (database UI) | <http://127.0.0.1:54323> |
 | Emails sent by local Auth | <http://127.0.0.1:54324> |
 
-Local sign-up does not need email confirmation.
+### Demo accounts
+
+Every start applies new migrations and restores this data from
+[`supabase/local-dev-data.sql`](supabase/local-dev-data.sql), in the local stack only:
+
+| Email | Password | Username |
+|---|---|---|
+| `alice@example.com` | `demo-password` | `alice_demo` |
+| `bob@example.com` | `demo-password` | `bob_demo` |
+
+They have finished onboarding and are friends, each has an unused consent to the other's voice, and
+there is one scenario. Use them to try the app: the sign-up page works locally without email
+confirmation, but it does not create a profile yet, so a new account gets errors from pages that
+need one.
+
+### Calls and the mock pipeline
+
+`POST /api/v1/calls` works in both options and returns a `ws_url` on the mock, which then plays a
+whole call. The mock does not report back to the backend (no claim or result), so the backend's
+call stays `queued`. The first time its owner reads the call or their history more than two minutes
+after it started, it becomes `failed` (`timed_out`). The canned result is at the mock's own
+`GET /api/v1/calls/<call id>`.
 
 ### Supabase commands
 
@@ -74,11 +95,17 @@ Run these from the repository root. With option 2, or before `npm run setup` has
 
 | Command | What it does |
 |---|---|
-| `npm run supabase stop` | Stops the local stack. Data is kept. |
-| `npm run supabase start` | Starts it again. |
-| `npm run supabase migration up` | Applies migrations added since the stack started (e.g. after a pull). |
-| `npm run supabase db reset` | Deletes all local data and reapplies every migration. |
+| `npm run supabase stop` | Stops the local stack. Data is kept. `npm run dev` or `npm run docker` starts it again. |
+| `npm run supabase migration up` | Applies new migrations without restarting anything. |
+| `npm run supabase db reset` | Deletes all local data and reapplies every migration. The next start restores the demo data. |
 | `npm run supabase status` | Shows the local URLs and keys. |
+
+If you switch to a branch with fewer migrations than your local database, starting prints a warning
+and carries on. `npm run supabase db reset` rebuilds the database for the current branch.
+
+`npm run setup`, `npm run dev` and `npm run docker` publish Supabase's ports on `127.0.0.1`. They
+warn if the stack was first started another way, which publishes them on every network interface;
+`docker compose down`, `npm run supabase stop` and starting again fixes that.
 
 ### Ports
 

@@ -1,8 +1,8 @@
 // Run the whole stack natively: `npm run dev` (after `npm run setup`).
 //
-// Makes sure the local Supabase stack is up, then runs the frontend, backend and mock voice
-// pipeline together with prefixed output. Ctrl+C stops all three; Supabase keeps running
-// (`npm run supabase stop` stops it).
+// Makes sure the local Supabase stack is up, migrated and has its demo data, then runs the frontend,
+// backend and mock voice pipeline together with prefixed output. Ctrl+C stops all three; Supabase
+// keeps running (`npm run supabase stop` stops it).
 //
 // Ports come from the environment or the optional root .env: BACKEND_PORT (default 8000) and
 // PIPELINE_PORT (default 8001). The frontend always uses 3000: backend CORS and the Supabase auth
@@ -13,11 +13,13 @@ import path from "node:path";
 import {
   BACKEND_DIR,
   FRONTEND_DIR,
+  LOCAL_PIPELINE_SECRET,
   checkDocker,
   checkNode,
   fail,
   loadRootEnv,
   port,
+  prepareSupabase,
   step,
   supabase,
 } from "./lib.mjs";
@@ -27,13 +29,18 @@ loadRootEnv();
 const backendPort = port("BACKEND_PORT", "8000");
 const pipelinePort = port("PIPELINE_PORT", "8001");
 
-for (const required of [path.join(FRONTEND_DIR, "node_modules"), path.join(BACKEND_DIR, ".venv")]) {
-  if (!existsSync(required)) fail("Dependencies are missing. Run `npm run setup` first.");
+for (const required of [
+  path.join(FRONTEND_DIR, "node_modules"),
+  path.join(FRONTEND_DIR, ".env.local"),
+  path.join(BACKEND_DIR, ".venv"),
+  path.join(BACKEND_DIR, ".env"),
+]) {
+  if (!existsSync(required)) fail(`${required} is missing. Run \`npm run setup\` first.`);
 }
 checkDocker();
 
-step("Starting the local Supabase stack (no-op if it is already running)");
-supabase(["start"], { capture: true });
+step("Starting the local Supabase stack and applying new migrations");
+prepareSupabase(supabase);
 
 const { default: concurrently } = await import("concurrently");
 
@@ -49,14 +56,24 @@ const { result } = concurrently(
       // port when 3000 is taken, which CORS and the auth redirects would reject.
       command: "npm run dev -- --port 3000",
       cwd: FRONTEND_DIR,
-      // Wins over .env.local, so the frontend always calls the backend started here.
-      env: { NEXT_PUBLIC_API_URL: `http://localhost:${backendPort}` },
+      env: {
+        // Wins over .env.local, so the frontend always calls the backend started here.
+        NEXT_PUBLIC_API_URL: `http://localhost:${backendPort}`,
+        // As in the frontend Dockerfile. It also stops `next dev` rewriting the tracked AGENTS.md
+        // with its agent feedback block on every start.
+        NEXT_TELEMETRY_DISABLED: "1",
+      },
       prefixColor: "cyan",
     },
     {
       name: "api",
       command: `uv run fastapi dev --port ${backendPort}`,
       cwd: BACKEND_DIR,
+      // Win over backend/.env, so calls always go to the mock started here.
+      env: {
+        PIPELINE_WS_URL: `ws://localhost:${pipelinePort}`,
+        PIPELINE_BACKEND_SECRET: LOCAL_PIPELINE_SECRET,
+      },
       prefixColor: "green",
     },
     {

@@ -1,19 +1,28 @@
-// Shared helpers for scripts/setup.mjs and scripts/dev.mjs.
+// Shared helpers for scripts/setup.mjs, scripts/dev.mjs and scripts/docker.mjs.
 //
 // Commands are spawned without a shell: npm and the Supabase CLI are run as Node scripts through
 // process.execPath, because Windows cannot spawn npm.cmd/npx.cmd directly, and a shell would make
 // quoting depend on the OS. Paths with spaces are passed as `cwd`, never interpolated.
 
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseEnv } from "node:util";
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const FRONTEND_DIR = path.join(ROOT, "frontend", "tiwwsah_webapp");
 export const BACKEND_DIR = path.join(ROOT, "backend");
 export const PIPELINE_DIR = path.join(ROOT, "voice-pipeline");
+
+// What the backend expects from the local mock pipeline. Matches compose.yaml. The mock never calls
+// the backend, so this value protects nothing; the backend only needs one to accept calls.
+export const LOCAL_PIPELINE_SECRET = "local-dev-pipeline-secret";
+
+// Named by project_id in supabase/config.toml. compose.yaml joins it too.
+const SUPABASE_NETWORK = "supabase_network_Trust-In-What-We-See-And-Hear";
+const LOOPBACK_OPTION = "com.docker.network.bridge.host_binding_ipv4=127.0.0.1";
 
 const MIN_NODE = [22, 13];
 
@@ -33,10 +42,17 @@ export function checkNode() {
   }
 }
 
-/** Load the optional, gitignored root .env (ports). Variables already set in the shell win. */
+/**
+ * Read the ports from the optional, gitignored root .env. Variables already set in the shell win.
+ * Nothing else is loaded, so stray settings there cannot reach the servers started from here.
+ */
 export function loadRootEnv() {
   const file = path.join(ROOT, ".env");
-  if (existsSync(file)) process.loadEnvFile(file);
+  if (!existsSync(file)) return;
+  const values = parseEnv(readFileSync(file, "utf8"));
+  for (const name of ["BACKEND_PORT", "PIPELINE_PORT"]) {
+    if (values[name] !== undefined) process.env[name] ??= values[name];
+  }
 }
 
 /** A port from the environment (or `fallback`), validated as 1-65535. */
@@ -49,8 +65,11 @@ export function port(name, fallback) {
   return value;
 }
 
-/** Run a command to completion, streaming its output. Exits the script if it fails. */
-export function run(command, args, { cwd = ROOT, env, capture = false } = {}) {
+/**
+ * Run a command to completion, streaming its output unless `capture` is set. Exits the script if it
+ * fails, or returns null with `allowFailure`.
+ */
+export function run(command, args, { cwd = ROOT, env, capture = false, allowFailure = false } = {}) {
   const result = spawnSync(command, args, {
     cwd,
     env: { ...process.env, ...env },
@@ -62,6 +81,9 @@ export function run(command, args, { cwd = ROOT, env, capture = false } = {}) {
   }
   if (result.error) fail(`${command} failed: ${result.error.message}`);
   if (result.status !== 0) {
+    // The Supabase CLI can report errors on stdout, which would otherwise be lost.
+    if (capture && result.stdout) process.stderr.write(result.stdout);
+    if (allowFailure) return null;
     fail(`\`${[path.basename(command), ...args].join(" ")}\` exited with code ${result.status}.`);
   }
   return result.stdout;
@@ -97,6 +119,63 @@ export function supabaseCli() {
 
 export function supabase(args, options) {
   return run(process.execPath, [supabaseCli(), ...args], options);
+}
+
+/**
+ * Start the local stack, apply migrations it has not seen (e.g. after a pull) and restore the demo
+ * data. `cli` runs the Supabase CLI. Migration or demo data problems only warn: a database that is
+ * ahead of this branch after switching branches is normal and should not block starting.
+ */
+export function prepareSupabase(cli, { showStartOutput = false } = {}) {
+  ensureLoopbackNetwork();
+  cli(["start"], { capture: !showStartOutput });
+  if (cli(["migration", "up", "--include-all"], { capture: true, allowFailure: true }) === null) {
+    console.warn(
+      "\n⚠ Could not apply the database migrations (see above). If you switched branches, " +
+        "`supabase db reset` rebuilds the local database from this branch.",
+    );
+  }
+  const demoData = ["db", "query", "--file", path.join("supabase", "local-dev-data.sql")];
+  if (cli(demoData, { capture: true, allowFailure: true }) === null) {
+    console.warn("\n⚠ Could not load the local demo data (see above).");
+  }
+}
+
+/**
+ * Create the stack's Docker network so its ports are published on 127.0.0.1 instead of every
+ * interface, which matters with well-known keys and passwords. The CLI reuses a network of this
+ * name. SUPABASE_SERVICES_HOSTNAME means the stack is on another machine, so loopback would not do.
+ */
+function ensureLoopbackNetwork() {
+  const host = process.env.SUPABASE_SERVICES_HOSTNAME;
+  if (host && !["127.0.0.1", "localhost"].includes(host)) return;
+  const inspect = ["network", "inspect", SUPABASE_NETWORK];
+  if (!has("docker", inspect)) {
+    // May lose a race with another start; the check below covers either outcome.
+    run("docker", ["network", "create", "--opt", LOOPBACK_OPTION, SUPABASE_NETWORK], {
+      capture: true,
+      allowFailure: true,
+    });
+  }
+  const options = run("docker", [...inspect, "--format", "{{json .Options}}"], {
+    capture: true,
+    allowFailure: true,
+  });
+  if (!options?.includes(`"${LOOPBACK_OPTION.replace("=", '":"')}"`)) {
+    console.warn(
+      "\n⚠ Supabase's ports may be reachable from your network. To limit them to this machine, " +
+        "run `docker compose down` and `npm run supabase stop` (data is kept), then start again.",
+    );
+  }
+}
+
+/** The running local stack's URL and keys, from `supabase status`. */
+export function supabaseStatus(cli) {
+  const status = JSON.parse(cli(["status", "--output", "json"], { capture: true }));
+  for (const key of ["API_URL", "PUBLISHABLE_KEY", "SECRET_KEY"]) {
+    if (!status[key]) fail(`\`supabase status\` did not report ${key}.`);
+  }
+  return status;
 }
 
 export function checkDocker() {
