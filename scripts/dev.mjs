@@ -1,13 +1,15 @@
 // Run the whole stack natively: `npm run dev` (after `npm run setup`).
 //
 // Makes sure the local Supabase stack is up, migrated and has its demo data (skipped with
-// `npm run dev -- --no-demo-data`), then runs the frontend,
-// backend and mock voice pipeline together with prefixed output. Ctrl+C stops all three; Supabase
-// keeps running (`npm run supabase stop` stops it).
+// `npm run dev -- --no-demo-data`), then runs the frontend, backend and mock voice pipeline
+// together with prefixed output. Ctrl+C stops all three; Supabase keeps running
+// (`npm run supabase stop` stops it).
 //
 // Ports come from the environment or the optional root .env: BACKEND_PORT (default 8000) and
 // PIPELINE_PORT (default 8001). The frontend always uses 3000: backend CORS and the Supabase auth
 // redirect URLs expect it.
+//
+// AI-assisted code (written with Claude Code), cited per the CSC398 AI policy.
 
 import { existsSync } from "node:fs";
 import path from "node:path";

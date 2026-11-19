@@ -10,6 +10,8 @@
 -- PUT /api/v1/users/me/voice to test anything that reads the audio.
 --
 -- One DO block because `supabase db query` runs a single statement.
+--
+-- AI-assisted code (written with Claude Code), cited per the CSC398 AI policy.
 
 do $$
 begin

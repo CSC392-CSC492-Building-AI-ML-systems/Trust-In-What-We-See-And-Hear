@@ -1,8 +1,11 @@
 // One-time setup for running everything natively: `npm run setup`.
 //
 // Installs dependencies, starts the local Supabase stack (applying migrations and loading the demo
-// data, unless given --no-demo-data) and creates backend/.env and frontend/tiwwsah_webapp/.env.local pointing at it. Safe to
-// rerun: existing env files are left alone.
+// data, unless given --no-demo-data) and creates backend/.env and
+// frontend/tiwwsah_webapp/.env.local pointing at it. Safe to rerun: existing env files are left
+// alone.
+//
+// AI-assisted code (written with Claude Code), cited per the CSC398 AI policy.
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
