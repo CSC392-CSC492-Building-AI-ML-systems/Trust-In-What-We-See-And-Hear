@@ -80,6 +80,10 @@ there is one scenario. Use them to try the app: the sign-up page works locally w
 confirmation, but it does not create a profile yet, so a new account gets errors from pages that
 need one.
 
+To start without loading it, add `-- --no-demo-data`, e.g. `npm run dev -- --no-demo-data` or
+`npm run docker -- --no-demo-data` (also works with `npm run setup`). Data loaded by an earlier
+start stays; `npm run supabase db reset` removes it.
+
 ### Calls and the mock pipeline
 
 `POST /api/v1/calls` works in both options and returns a `ws_url` on the mock, which then plays a
