@@ -20,10 +20,6 @@ export const PIPELINE_DIR = path.join(ROOT, "voice-pipeline");
 // the backend, so this value protects nothing; the backend only needs one to accept calls.
 export const LOCAL_PIPELINE_SECRET = "local-dev-pipeline-secret";
 
-// Named by project_id in supabase/config.toml. compose.yaml joins it too.
-const SUPABASE_NETWORK = "supabase_network_Trust-In-What-We-See-And-Hear";
-const LOOPBACK_OPTION = "com.docker.network.bridge.host_binding_ipv4=127.0.0.1";
-
 const MIN_NODE = [22, 13];
 
 export function fail(message) {
@@ -127,7 +123,6 @@ export function supabase(args, options) {
  * ahead of this branch after switching branches is normal and should not block starting.
  */
 export function prepareSupabase(cli, { showStartOutput = false } = {}) {
-  ensureLoopbackNetwork();
   cli(["start"], { capture: !showStartOutput });
   if (cli(["migration", "up", "--include-all"], { capture: true, allowFailure: true }) === null) {
     console.warn(
@@ -138,34 +133,6 @@ export function prepareSupabase(cli, { showStartOutput = false } = {}) {
   const demoData = ["db", "query", "--file", path.join("supabase", "local-dev-data.sql")];
   if (cli(demoData, { capture: true, allowFailure: true }) === null) {
     console.warn("\n⚠ Could not load the local demo data (see above).");
-  }
-}
-
-/**
- * Create the stack's Docker network so its ports are published on 127.0.0.1 instead of every
- * interface, which matters with well-known keys and passwords. The CLI reuses a network of this
- * name. SUPABASE_SERVICES_HOSTNAME means the stack is on another machine, so loopback would not do.
- */
-function ensureLoopbackNetwork() {
-  const host = process.env.SUPABASE_SERVICES_HOSTNAME;
-  if (host && !["127.0.0.1", "localhost"].includes(host)) return;
-  const inspect = ["network", "inspect", SUPABASE_NETWORK];
-  if (!has("docker", inspect)) {
-    // May lose a race with another start; the check below covers either outcome.
-    run("docker", ["network", "create", "--opt", LOOPBACK_OPTION, SUPABASE_NETWORK], {
-      capture: true,
-      allowFailure: true,
-    });
-  }
-  const options = run("docker", [...inspect, "--format", "{{json .Options}}"], {
-    capture: true,
-    allowFailure: true,
-  });
-  if (!options?.includes(`"${LOOPBACK_OPTION.replace("=", '":"')}"`)) {
-    console.warn(
-      "\n⚠ Supabase's ports may be reachable from your network. To limit them to this machine, " +
-        "run `docker compose down` and `npm run supabase stop` (data is kept), then start again.",
-    );
   }
 }
 
