@@ -379,7 +379,7 @@ export async function apiFetch(path: string, init: RequestInit = {}) {
     headers.set("Content-Type", "application/json");
   }
 
-  return fetch(`${process.env.BACKEND_API_URL}${path}`, {
+  return fetch(`${process.env.NEXT_PUBLIC_API_URL}${path}`, {
     ...init,
     headers,
     cache: "no-store",
@@ -513,6 +513,9 @@ Full API reference: `http://localhost:8000/docs` while the backend is running.
 ---
 
 ## 4. Testing the flow locally
+
+These steps test against the hosted project. To test against a local Supabase stack with ready-made
+accounts instead, follow [Local development](../README.md#local-development) in the root README.
 
 1. Fill in both env files ([1.7](#17-environment-files)).
 2. Start the backend: `cd backend && uv run fastapi dev`.
