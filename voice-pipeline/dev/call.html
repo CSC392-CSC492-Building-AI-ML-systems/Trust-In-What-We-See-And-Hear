@@ -32,6 +32,18 @@
 <h1>Call test</h1>
 <p><small>Follows PROTOCOL.md. Use headphones, or the caller can hear itself.</small></p>
 
+<h2>1. Record your voice (optional)</h2>
+<p><small>The caller will speak in this voice. Record 10 to 20 seconds of normal
+speech, for example: "Hi, it's me. I'm just walking home from work and thought
+I'd call. Anyway, how has your week been? Mine has been busy but good."
+Without a recording the caller uses the pod's default voice. The recording is
+deleted from the server when the call ends.</small></p>
+<button id="rec">Record</button>
+<button id="recstop" disabled>Stop</button>
+<span id="recstate">No recording: the default voice is used.</span>
+<div><audio id="recplay" controls hidden></audio></div>
+
+<h2>2. Call</h2>
 <button id="call">Call</button>
 <button id="answer" disabled>Answer</button>
 <button id="hangup" disabled>Hang up</button>
@@ -65,7 +77,59 @@ function log(cls, text) {
 function setState(text) { $('state').textContent = text; }
 function send(msg) { ws.send(JSON.stringify(msg)); log('out', '-> ' + JSON.stringify(msg)); }
 
-$('call').onclick = () => {
+// Recording a voice to clone: raw microphone samples, saved as a WAV file.
+let voiceWav = null, rec = null;
+$('rec').onclick = async () => {
+  const stream = await navigator.mediaDevices.getUserMedia(
+    {audio: {echoCancellation: false, noiseSuppression: true, autoGainControl: true}});
+  const ctx = new AudioContext();
+  await ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([WORKLET], {type: 'text/javascript'})));
+  const source = ctx.createMediaStreamSource(stream);
+  const node = new AudioWorkletNode(ctx, 'tap');
+  const chunks = [];
+  node.port.onmessage = e => { chunks.push(e.data); };
+  source.connect(node);
+  const started = Date.now();
+  const timer = setInterval(() => {
+    const t = (Date.now() - started) / 1000;
+    $('recstate').textContent = `Recording... ${t.toFixed(0)} s` + (t < 8 ? ' (keep going)' : '');
+    if (t >= 30) $('recstop').onclick();
+  }, 250);
+  rec = {stream, ctx, source, chunks, timer, started};
+  $('rec').disabled = true; $('recstop').disabled = false; $('call').disabled = true;
+};
+$('recstop').onclick = () => {
+  if (!rec) return;
+  const {stream, ctx, source, chunks, timer, started} = rec;
+  rec = null;
+  clearInterval(timer); source.disconnect(); stream.getTracks().forEach(t => t.stop());
+  const seconds = (Date.now() - started) / 1000;
+  $('rec').disabled = false; $('recstop').disabled = true; $('call').disabled = false;
+  if (seconds < 6) {
+    ctx.close();
+    $('recstate').textContent = 'Too short: record at least 6 seconds.';
+    return;
+  }
+  voiceWav = toWav(chunks, ctx.sampleRate);
+  ctx.close();
+  $('recplay').src = URL.createObjectURL(voiceWav); $('recplay').hidden = false;
+  $('recstate').textContent = `Recorded ${seconds.toFixed(0)} s. Your calls use this voice. Record again to replace it.`;
+};
+
+function toWav(chunks, rate) {
+  const n = chunks.reduce((a, c) => a + c.length, 0);
+  const buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
+  const text = (o, t) => { for (let i = 0; i < t.length; i++) v.setUint8(o + i, t.charCodeAt(i)); };
+  text(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); text(8, 'WAVE');
+  text(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  text(36, 'data'); v.setUint32(40, n * 2, true);
+  let o = 44;
+  for (const c of chunks) for (const x of c) { v.setInt16(o, Math.max(-1, Math.min(1, x)) * 32767, true); o += 2; }
+  return new Blob([buf], {type: 'audio/wav'});
+}
+
+$('call').onclick = async () => {
   // ?server=wss://host&token=... points the page at another server (the pod).
   const q = new URLSearchParams(location.search);
   const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -73,6 +137,13 @@ $('call').onclick = () => {
   callId = `test-${Date.now()}`;
   token = q.get('token') || 'dev';
   httpBase = server.replace(/^ws/, 'http');
+  $('call').disabled = true;
+  if (voiceWav) {
+    setState('Uploading your voice...');
+    const r = await fetch(`/dev/voice/${callId}?token=${encodeURIComponent(token)}`,
+                          {method: 'POST', headers: {'Content-Type': 'audio/wav'}, body: voiceWav});
+    if (!r.ok) { setState(`Could not upload your voice (HTTP ${r.status}).`); $('call').disabled = false; return; }
+  }
   $('talk').replaceChildren();
   $('result').textContent = 'The result appears after the call ends.';
   ws = new WebSocket(`${server}/ws/calls/${callId}?token=${encodeURIComponent(token)}`);
@@ -114,7 +185,7 @@ async function handle(m) {
   } else if (m.type === 'speech_end') {
     setState('Caller is answering...');
   } else if (m.type === 'error' && m.code === 'setup_failed') {
-    setState('The call could not start. Was the server given a voice recording (--voice)?');
+    setState('The call could not start. If you recorded a voice, try a longer, clearer recording.');
   } else if (m.type === 'call_ended') {
     setState(`Call ended (${m.reason}). This was a simulation.`);
     pollResult(callId);
