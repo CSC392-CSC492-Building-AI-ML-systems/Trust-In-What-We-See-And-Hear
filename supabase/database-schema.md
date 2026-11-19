@@ -11,7 +11,7 @@ up and in (email and password; no other providers for now) directly with Supabas
 the resulting access token (a JWT) to the backend, which verifies it. The backend has no login or
 registration endpoints and there is no session table in our schema. See
 [docs/authentication.md](../docs/authentication.md).
-Binary files (voice samples, Chatterbox `.pt` files, call recordings) live in **Supabase Storage**,
+Binary files (voice samples, any files the voice pipeline derives from them, call recordings) live in **Supabase Storage**,
 and the tables only store the storage path.
 
 ---
@@ -23,7 +23,7 @@ and the tables only store the storage path.
 | `auth.users` | Managed by Supabase Auth (email, password hash) | None (Supabase Auth on the client) |
 | `users` | App-level profile for each user (name, ID verification, onboarding answers) | `finishOnboarding`, `VerifyUser`, `getUserInfo`, `editUserInfo` |
 | `friendships` | Friend requests and accepted friendships between two users | `sendFriendRequest`, `acceptFriendRequest`, `declineFriendRequest`, `getFriendsList`, `removeFriend` |
-| `voices` | Each user's own cloned voice (Chatterbox `.pt` file) | `trainVoice` |
+| `voices` | Each user's own voice reference sample for Chatterbox | `uploadVoiceSample`, `getVoice`, `deleteVoice` |
 | `scam_consents` | Time-limited permission from a friend to use their profile and voice | `RequestConsent`, `AcceptConsent`, `DeclineConsent`, `getConsents` |
 | `scam_scenarios` | Built-in and user-created scam scripts the AI pipeline uses | `addScenario`, `removeScenario`, `UpdateScenario` |
 | `calls` | One row per simulated scam call | `GetCallHistory`, `GetCallDetails` |
@@ -149,6 +149,10 @@ One row per pair of users, whichever of them sent the request.
 - `sendFriendRequest` inserts a `pending` row.
 - `acceptFriendRequest` sets it to `accepted`, which puts each user on the other's friends list.
 - `declineFriendRequest` and `removeFriend` delete the row, so the users can send a new request later.
+- `updateFriendNotes` sets the current user's own private note about the friend (migration 0005).
+  The row is shared, so each side has its own column, and clients cannot read either note column
+  directly (column privileges); only the backend returns a user's own note. A user's note about a
+  friend goes into the call context when that user starts a call with the friend's voice.
 
 ```sql
 create table public.friendships (
@@ -158,6 +162,8 @@ create table public.friendships (
   status        friendship_status not null default 'pending',
   created_at    timestamptz not null default now(),
   accepted_at   timestamptz,
+  requester_notes text check (char_length(requester_notes) <= 100),  -- requester's note about addressee (0005)
+  addressee_notes text check (char_length(addressee_notes) <= 100),  -- addressee's note about requester (0005)
   check (requester_id <> addressee_id)
 );
 
@@ -169,21 +175,24 @@ create index friendships_requester_id_idx on public.friendships(requester_id);
 create index friendships_addressee_id_idx on public.friendships(addressee_id);
 ```
 
-### `voices` (trainVoice)
+### `voices` (uploadVoiceSample)
 
-One voice per user. Training again replaces the existing row's files.
-
-`trainVoice` takes an mp3, generates a Chatterbox `.pt` file, and stores it linked to the requesting
-user. It only ever trains the requesting user's own voice. Friends get access through
-`scam_consents`, and never receive the file itself.
+One voice per user. Chatterbox is pretrained and clones a voice from a reference recording, so there
+is no per-user training: the user uploads a reference sample of their own voice
+(`PUT /api/v1/users/me/voice`), and uploading again replaces it and deletes the old files. The
+backend checks the recording (15–60 seconds, not silent) and sets `status` to `ready` as soon as it
+is saved, since the voice pipeline reads the sample directly when a call starts. `uploaded` and
+`training` are not used for now, and nothing is derived from the sample, so `model_storage_path`
+stays null. Only the owner's own voice is ever uploaded. Friends get access through
+`scam_consents`, and never receive any file.
 
 ```sql
 create table public.voices (
   id                    uuid primary key default gen_random_uuid(),
   user_id               uuid unique not null references public.users(id) on delete cascade,
-  sample_storage_path   text,                      -- Supabase Storage: voice-samples/{user_id}/{voice_id}.mp3
+  sample_storage_path   text,                      -- Supabase Storage: voice-samples/{user_id}/{upload_id}.wav
   sample_duration_seconds numeric(6,2),
-  model_storage_path    text,                      -- Supabase Storage: voice-models/{user_id}/{voice_id}.pt, set once training completes
+  model_storage_path    text,                      -- Supabase Storage: voice-models/..., if the pipeline derives a file (TBD)
   status                voice_status not null default 'uploaded',
   error_message         text,
   -- User confirms the sample is their own voice and agrees to it being cloned
@@ -244,6 +253,7 @@ create table public.scam_scenarios (
   category        scam_category not null,
   difficulty      smallint not null default 2 check (difficulty between 1 and 3),
   description     text not null,                   -- shown to the user when choosing a scenario
+  ask             text,                            -- what the caller asks for (migration 0005); null = cannot start a call
   system_prompt   text not null,                   -- OpenAI prompt for the scammer agent
   red_flags       jsonb not null default '[]'::jsonb, -- ["urgency", "secrecy request", "gift cards"]
   max_duration_seconds int not null default 300,
@@ -260,6 +270,11 @@ create index scam_scenarios_created_by_idx on public.scam_scenarios(created_by);
 `consent_id`, `persona_user_id` and `scenario_id` are nullable so that call history survives when
 those rows are deleted. The backend requires all three when it creates a call.
 
+A call is `queued` when created, `in_progress` once the voice pipeline claims it with the one-time
+token, then `completed` when the pipeline reports a result, or `failed`. A call never claimed before
+`claim_expires_at`, or with no result long after it started, is failed as `timed_out` the next
+time its user reads their calls. See `backend/app/modules/calls/service.py`.
+
 ```sql
 create table public.calls (
   id                    uuid primary key default gen_random_uuid(),
@@ -275,8 +290,13 @@ create table public.calls (
   ended_at              timestamptz,
   duration_seconds      int,
   recording_storage_path text,                     -- optional; subject to retention policy
-  failure_reason        text,
-  created_at            timestamptz not null default now()
+  failure_reason        text,                     -- timed_out, error, not_scored or voice_unavailable
+  created_at            timestamptz not null default now(),
+  -- migration 0005: what the voice pipeline needs (voice-pipeline/BACKEND.md)
+  claim_token_hash      text,                     -- SHA-256 of the one-time token in ws_url; cleared when claimed
+  claim_expires_at      timestamptz,
+  call_context          jsonb,                    -- validated call context; cleared once the pipeline has it
+  max_duration_seconds  int check (max_duration_seconds > 0)
 );
 
 create index calls_user_id_created_at_idx on public.calls(user_id, created_at desc);
@@ -386,9 +406,17 @@ through the backend.
 
 | Bucket | Path | Access |
 |---|---|---|
-| `voice-samples` (private) | `{user_id}/{voice_id}.mp3` | owner only |
-| `voice-models` (private) | `{user_id}/{voice_id}.pt` | backend only; never sent to a client |
+| `voice-samples` (private) | `{user_id}/{upload_id}.wav` (mono 16-bit WAV, converted from the upload) | backend only; never sent to a client |
+| `voice-models` (private) | `{user_id}/...` (unused for now) | backend only; never sent to a client |
 | `call-recordings` (private) | `{user_id}/{call_id}.mp3` | owner only; deleted after retention period |
+
+Draft migration `0004_voice_storage_buckets.sql` creates the two voice buckets. They have no
+`storage.objects` policies, so clients cannot read or write them; the backend uses the secret key.
+Each upload gets a new `upload_id`, so a failed upload never overwrites the sample the database
+points to. After a successful upload, the backend deletes the replaced sample and anything derived from it.
+Deleting the voice deletes its files, then the row (so a failed attempt can be retried). Both also
+delete leftovers of failed requests: unreferenced files in the user's folders older than 10
+minutes (a newer one may belong to an upload still saving its record).
 
 ---
 
@@ -404,8 +432,11 @@ through the backend.
   snapshot.
 - **Call recordings**: deleted after 30 days (scheduled job). Results are kept until the user deletes
   them.
-- **Voice samples**: deleted from Storage once training is `ready`, which sets
-  `sample_storage_path` to null. The `.pt` file is kept until the user retrains or is deleted.
+- **Voice samples**: kept until the user replaces or deletes their voice
+  (`DELETE /api/v1/users/me/voice`, which deletes the files, then the row, then older leftovers;
+  it can be repeated until it succeeds). A file left by a failed request is deleted on the user's
+  next upload or delete. **TBD:** a scheduled sweep for users who never come back. The sample is
+  needed for every call, since Chatterbox clones from it each time.
 
 ---
 
@@ -425,16 +456,21 @@ the frontend calls Supabase Auth directly, which writes `auth.users`.
 | `POST declineFriendRequest` | `friendships` | `friendships` (deletes row; addressee only) |
 | `GET getFriendsList` | `friendships`, `users` (safe fields) | – |
 | `DEL removeFriend` | `friendships` | `friendships` (deletes row) |
+| `PUT updateFriendNotes` | `friendships` | `friendships` (the current user's own notes column) |
 | `POST RequestConsent` | `friendships`, `voices` | `scam_consents` |
 | `POST AcceptConsent` | `scam_consents`, `friendships` | `scam_consents` (consenter only; sets `expires_at`) |
 | `POST DeclineConsent` | `scam_consents` | `scam_consents` (consenter only) |
 | `GET getConsents` | `scam_consents`, `users` (safe fields) | – |
-| `GET GetCallHistory` | `calls`, `call_results` (score/outcome) | – |
-| `GET GetCallDetails` | `calls`, `call_results` | – |
-| `POST trainVoice` | `voices` | Storage, `voices` |
+| `POST StartCall` | `scam_scenarios`, `scam_consents`, `users` (names), `voices`, `friendships` (the user's note) | `scam_consents` (`used_at`), `calls` |
+| `GET GetCallHistory` | `calls`, `call_results` (score/outcome) | `calls` (fails stale calls) |
+| `GET GetCallDetails` | `calls`, `call_results` | `calls` (fails stale calls) |
+| `PUT uploadVoiceSample` | `voices` | Storage, `voices` |
+| `GET getVoice` | `voices` | – |
+| `DEL deleteVoice` | `voices` | Storage, `voices` (deletes row) |
 | `POST addScenario` | – | `scam_scenarios` |
 | `PUT UpdateScenario` | `scam_scenarios` | `scam_scenarios` (creator only) |
 | `DEL removeScenario` | `scam_scenarios` | `scam_scenarios` (creator only) |
-| Call pipeline (backend) | `calls` | `calls`, `call_results` |
+| Pipeline: claim a call | `calls`, `voices` | `calls`; signed Storage link to the sample |
+| Pipeline: report a result | `calls` | `calls`, `call_results` |
 
 ---

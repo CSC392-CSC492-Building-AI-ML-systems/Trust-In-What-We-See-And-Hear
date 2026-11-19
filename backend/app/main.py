@@ -1,5 +1,6 @@
 """Application creation and router registration."""
 
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -8,13 +9,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.health import router as health_router
 from app.api.openapi import API_DESCRIPTION, OPENAPI_TAGS
 from app.api.router import router as api_router
+from app.core.body_limit import BodySizeLimitMiddleware
 from app.core.config import Settings, get_settings
 from app.core.errors import request_validation_error_handler
-from app.integrations.supabase import SupabaseUnavailableError
+from app.integrations.supabase import SupabaseStorageError, SupabaseUnavailableError
+from app.modules.voices.audio import AudioDecoder
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -35,30 +41,38 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     application.state.settings = settings
-
     application.add_middleware(
-        CORSMiddleware,
-        allow_origins=[
-            "http://localhost:3000",
-            "http://127.0.0.1:3000"
-        ],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    ) 
+    application.state.audio_decoder = AudioDecoder()
     application.add_exception_handler(
         RequestValidationError, request_validation_error_handler
     )
 
     @application.exception_handler(SupabaseUnavailableError)
-    async def supabase_unavailable(request: Request, exc: SupabaseUnavailableError) -> JSONResponse:
-        # Authentication catches its own outages first, so this is the database.
+    @application.exception_handler(SupabaseStorageError)
+    async def supabase_unavailable(request: Request, exc: Exception) -> JSONResponse:
+        # Authentication catches its own outages first, so this is the database
+        # or Storage. A Storage error (not 429 or 5xx) means missing setup, such
+        # as a bucket that was never created, so it is logged.
+        if isinstance(exc, SupabaseStorageError):
+            logger.error("Supabase Storage refused a request: %s", exc)
         return JSONResponse(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            content={"detail": "The database is unavailable."},
+            content={"detail": "A backend service is unavailable. Try again later."},
         )
 
+    # Room for the largest voice sample plus the multipart form around it.
+    application.add_middleware(
+        BodySizeLimitMiddleware, max_bytes=settings.voice_sample_max_bytes + 64 * 1024
+    )
     application.include_router(health_router)
     application.include_router(api_router)
     return application

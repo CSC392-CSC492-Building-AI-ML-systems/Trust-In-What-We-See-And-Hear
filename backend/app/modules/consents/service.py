@@ -19,6 +19,7 @@ that arrives late cannot use a consent that expired in the meantime.
 AI-assisted code (written with Claude Code), cited per the CSC398 AI policy.
 """
 
+import logging
 from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
@@ -27,6 +28,8 @@ from app.integrations.supabase import SupabaseDatabase
 from app.modules.consents.schemas import ConsentResponse
 from app.modules.users.public import PUBLIC_USER_COLUMNS, to_public_user
 
+logger = logging.getLogger(__name__)
+
 CONSENT_COLUMNS = (
     "id,status,requested_at,responded_at,expires_at,used_at,requester_id,consenter_id,"
     f"requester:users!scam_consents_requester_id_fkey({PUBLIC_USER_COLUMNS}),"
@@ -34,8 +37,8 @@ CONSENT_COLUMNS = (
     f"consenter:users!scam_consents_consenter_id_fkey({PUBLIC_USER_COLUMNS},voice:voices(status))"
 )
 
-# Voice statuses in which the voice can be used in a call. Revisit once the
-# voice pipeline decides what "ready" means for zero-shot cloning.
+# Voice statuses in which the voice can be used in a call. Cloning is zero-shot,
+# so a voice is "ready" as soon as its sample upload is saved.
 USABLE_VOICE_STATUSES = frozenset({"ready"})
 
 # PostgreSQL reads the timestamp `now` as the current time on the database.
@@ -127,6 +130,27 @@ async def use_consent(
             "consent_unusable", "This consent was already used or is no longer valid."
         )
     return used[0]
+
+
+async def restore_consent(db: SupabaseDatabase, consent_id: UUID, requester_id: UUID) -> None:
+    """Undo use_consent when the call it was used for could not be created.
+
+    Best effort: a failure here is logged, not raised, so the caller can report
+    the original error. The consent still expires on schedule.
+    """
+    try:
+        await db.update(
+            "scam_consents",
+            {
+                "id": f"eq.{consent_id}",
+                "requester_id": f"eq.{requester_id}",
+                "used_at": "not.is.null",
+            },
+            {"used_at": None},
+            "id",
+        )
+    except Exception:
+        logger.exception("Could not restore consent %s after a failed call start.", consent_id)
 
 
 def to_consent(row: dict[str, Any], user_id: UUID, now: datetime) -> ConsentResponse:

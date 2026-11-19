@@ -6,7 +6,10 @@ The backend API for the project, built with FastAPI.
 
 ## Development
 
-Requires [uv](https://docs.astral.sh/uv/getting-started/installation/) and Python >= 3.14 (which uv can install).
+Requires [uv](https://docs.astral.sh/uv/getting-started/installation/) and Python >= 3.14 (which uv can install),
+and [ffmpeg](https://ffmpeg.org/download.html) on `PATH` (or set `FFMPEG_PATH`) to decode uploaded voice
+samples (`winget install ffmpeg`, `brew install ffmpeg`, `apt install ffmpeg`). Without it, voice
+uploads return `503` and the voice tests are skipped.
 
 ```powershell
 uv sync
@@ -27,9 +30,11 @@ Mark undecided behavior as **TBD** rather than describing a guess.
 
 ## Current State
 
-Skeleton with provisional contracts. Authentication and the current user's profile
-(`/api/v1/users/me`) are implemented; other business routes under `/api/v1` return
-`501 Not Implemented`.
+Authentication, the current user's profile and voice, friends, consents, scenarios and
+calls are implemented; other business routes under `/api/v1` return `501 Not Implemented`.
+Calls also need `PIPELINE_WS_URL` and `PIPELINE_BACKEND_SECRET` (see `.env.example` and
+[voice-pipeline/BACKEND.md](../voice-pipeline/BACKEND.md)); without them, `POST /calls`
+returns `503`.
 Authentication is handled by Supabase Auth: the frontend signs users up and in (email and
 password) with supabase-js and sends the session's access token as
 `Authorization: Bearer <token>`. The backend only verifies that token with Supabase.

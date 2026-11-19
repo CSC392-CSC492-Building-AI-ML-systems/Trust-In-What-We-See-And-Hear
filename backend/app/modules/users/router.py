@@ -29,7 +29,10 @@ CurrentUser = Annotated[AuthenticatedUser, Depends(get_current_user)]
 SupabaseDb = Annotated[SupabaseDatabase, Depends(get_supabase_db)]
 
 PROFILE_COLUMNS = (
-    "id,username,first_name,last_name,preferred_language,verified_at,onboarding_answers,created_at"
+    "id,username,first_name,last_name,preferred_language,verified_at,onboarding_answers,"
+    "created_at,"
+    # One-to-one (voices.user_id is unique), so PostgREST embeds an object or null.
+    "voice:voices(status)"
 )
 # Default Postgres names for the primary key and the unique username constraint.
 PROFILE_EXISTS_CONSTRAINT = "users_pkey"
@@ -165,6 +168,7 @@ def _to_profile(row: dict[str, Any]) -> UserProfileResponse:
             verified=row["verified_at"] is not None,
             onboarding_answers=row["onboarding_answers"],
             created_at=row["created_at"],
+            voice_status=_voice_status(row.get("voice")),
         )
     except (KeyError, ValidationError):
         # A row missing columns or holding invalid values is a malformed response.
@@ -181,6 +185,13 @@ def _invalid_names() -> NoReturn:
             )
         ).model_dump(),
     )
+
+
+def _voice_status(voice: Any) -> str | None:
+    # Accept a one-item list too, in case PostgREST does not detect the one-to-one.
+    if isinstance(voice, list):
+        voice = voice[0] if voice else None
+    return voice["status"] if isinstance(voice, dict) else None
 
 
 def _profile_not_found() -> NoReturn:

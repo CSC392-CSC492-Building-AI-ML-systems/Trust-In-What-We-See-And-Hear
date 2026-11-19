@@ -25,8 +25,14 @@ FRIEND_PUBLIC = {
 }
 
 
-def friendship(requester, addressee, status="pending", accepted_at=None):
+MY_NOTE = "We met at UofT. Calls me Bo."
+THEIR_NOTE = "Sam's private note about Alex."
+
+
+def friendship(requester, addressee, status="pending", accepted_at=None, notes=None):
+    """`notes` maps a user ID to that user's own note about the other."""
     rows_by_id = {ME: ME_ROW, FRIEND: FRIEND_ROW}
+    notes = notes or {}
     return {
         "id": str(REQUEST_ID),
         "status": status,
@@ -36,6 +42,8 @@ def friendship(requester, addressee, status="pending", accepted_at=None):
         "addressee_id": str(addressee),
         "requester": rows_by_id[requester],
         "addressee": rows_by_id[addressee],
+        "requester_notes": notes.get(requester),
+        "addressee_notes": notes.get(addressee),
     }
 
 
@@ -178,7 +186,9 @@ def test_accept_friend_request(db_client, db):
     response = db_client.post(f"/api/v1/friend-requests/{REQUEST_ID}/accept")
 
     assert response.status_code == 200
-    assert response.json() == {**FRIEND_PUBLIC, "friends_since": "2026-11-09T10:00:00Z"}
+    assert response.json() == {
+        **FRIEND_PUBLIC, "friends_since": "2026-11-09T10:00:00Z", "notes": None
+    }
     request = db.sent("PATCH", "friendships")[0]
     # Only the addressee can accept, and only a pending request.
     assert request.url.params["id"] == f"eq.{REQUEST_ID}"
@@ -220,18 +230,87 @@ def test_list_friends(db_client, db, requester, addressee):
     db.on(
         "GET",
         "friendships",
-        rows(friendship(requester, addressee, "accepted", "2026-11-09T10:00:00+00:00")),
+        rows(
+            friendship(
+                requester,
+                addressee,
+                "accepted",
+                "2026-11-09T10:00:00+00:00",
+                notes={ME: MY_NOTE, FRIEND: THEIR_NOTE},
+            )
+        ),
     )
     response = db_client.get("/api/v1/friends")
     assert response.status_code == 200
-    # The other user is listed, whichever side sent the original request.
+    # The other user is listed, whichever side sent the original request, with
+    # the current user's own note about them, never theirs about the current user.
     assert response.json()["items"] == [
-        {**FRIEND_PUBLIC, "friends_since": "2026-11-09T10:00:00Z"}
+        {**FRIEND_PUBLIC, "friends_since": "2026-11-09T10:00:00Z", "notes": MY_NOTE}
     ]
     params = db.sent("GET", "friendships")[0].url.params
     # Only the current user's friendships.
     assert params["or"] == f"(requester_id.eq.{ME},addressee_id.eq.{ME})"
     assert params["status"] == "eq.accepted"
+
+
+# PUT /friends/{user_id}/notes
+
+
+@pytest.mark.parametrize(
+    ("requester", "addressee", "column"),
+    [(ME, FRIEND, "requester_notes"), (FRIEND, ME, "addressee_notes")],
+)
+def test_update_friend_notes(db_client, db, requester, addressee, column):
+    db.on("GET", "friendships", rows({"id": str(REQUEST_ID), "requester_id": str(requester)}))
+    updated = friendship(
+        requester, addressee, "accepted", "2026-11-09T10:00:00+00:00",
+        notes={ME: MY_NOTE, FRIEND: THEIR_NOTE},
+    )
+    db.on("PATCH", "friendships", rows(updated))
+
+    response = db_client.put(f"/api/v1/friends/{FRIEND}/notes", json={"notes": f"  {MY_NOTE} "})
+
+    assert response.status_code == 200
+    assert response.json()["notes"] == MY_NOTE
+    lookup = db.sent("GET", "friendships")[0].url.params
+    assert lookup["or"] == (
+        f"(and(requester_id.eq.{ME},addressee_id.eq.{FRIEND}),"
+        f"and(requester_id.eq.{FRIEND},addressee_id.eq.{ME}))"
+    )
+    assert lookup["status"] == "eq.accepted"
+    request = db.sent("PATCH", "friendships")[0]
+    assert request.url.params["id"] == f"eq.{REQUEST_ID}"
+    assert request.url.params["status"] == "eq.accepted"
+    # Only the current user's own column, whichever side sent the request.
+    assert body(request) == {column: MY_NOTE}
+
+
+@pytest.mark.parametrize("notes", [None, "", "   "])
+def test_clear_friend_notes(db_client, db, notes):
+    db.on("GET", "friendships", rows({"id": str(REQUEST_ID), "requester_id": str(ME)}))
+    db.on("PATCH", "friendships", rows(friendship(ME, FRIEND, "accepted", "2026-11-09T10:00:00+00:00")))
+    response = db_client.put(f"/api/v1/friends/{FRIEND}/notes", json={"notes": notes})
+    assert response.status_code == 200
+    assert response.json()["notes"] is None
+    assert body(db.sent("PATCH", "friendships")[0]) == {"requester_notes": None}
+
+
+@pytest.mark.parametrize("patch_rows", [None, rows()])
+def test_notes_for_non_friend_is_404(db_client, db, patch_rows):
+    if patch_rows is None:
+        db.on("GET", "friendships", rows())
+    else:  # unfriended between the lookup and the update
+        db.on("GET", "friendships", rows({"id": str(REQUEST_ID), "requester_id": str(ME)}))
+        db.on("PATCH", "friendships", patch_rows)
+    response = db_client.put(f"/api/v1/friends/{FRIEND}/notes", json={"notes": MY_NOTE})
+    assert response.status_code == 404
+    assert response.json()["detail"]["code"] == "friend_not_found"
+
+
+@pytest.mark.parametrize("payload", [{"notes": "x" * 101}, {}, {"notes": "ok", "extra": 1}])
+def test_update_friend_notes_rejects_invalid_bodies(db_client, db, payload):
+    response = db_client.put(f"/api/v1/friends/{FRIEND}/notes", json=payload)
+    assert response.status_code == 422
 
 
 def test_remove_friend(db_client, db):
@@ -260,4 +339,4 @@ def test_database_outage_is_503(db_client, db):
     db.on("GET", "friendships", httpx.Response(503))
     response = db_client.get("/api/v1/friends")
     assert response.status_code == 503
-    assert response.json() == {"detail": "The database is unavailable."}
+    assert response.json() == {"detail": "A backend service is unavailable. Try again later."}

@@ -14,6 +14,7 @@ from pydantic import (
 from pydantic.json_schema import SkipJsonSchema
 
 from app.api.schemas import RequestModel
+from app.modules.voices.schemas import VoiceStatus
 
 Username = Annotated[
     str,
@@ -84,6 +85,9 @@ class UserProfileResponse(BaseModel):
         description="Null if never given or removed by the user."
     )
     created_at: datetime = Field(description="When the profile was created (onboarding finished).")
+    voice_status: VoiceStatus | None = Field(
+        description="Status of the user's voice sample; null if they have not uploaded one."
+    )
 
 
 class SignUpNames(BaseModel):
