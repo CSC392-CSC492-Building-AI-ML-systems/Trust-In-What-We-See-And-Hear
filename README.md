@@ -103,9 +103,9 @@ Run these from the repository root. With option 2, or before `npm run setup` has
 If you switch to a branch with fewer migrations than your local database, starting prints a warning
 and carries on. `npm run supabase db reset` rebuilds the database for the current branch.
 
-`npm run setup`, `npm run dev` and `npm run docker` publish Supabase's ports on `127.0.0.1`. They
-warn if the stack was first started another way, which publishes them on every network interface;
-`docker compose down`, `npm run supabase stop` and starting again fixes that.
+The local stack uses well-known keys and the demo passwords above, and the Supabase CLI makes its
+ports reachable from your network, so stop it (`npm run supabase stop`) on a network you do not
+trust.
 
 ### Ports
 
