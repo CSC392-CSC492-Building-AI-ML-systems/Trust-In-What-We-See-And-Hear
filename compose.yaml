@@ -3,20 +3,22 @@
 #
 #   npm run docker
 #
-# which runs `npx --yes supabase@<pinned version> start` and then
-# `docker compose up --build --watch --force-recreate` (Compose 2.25 or newer).
+# which starts Supabase with the pinned CLI, applies new migrations, loads the demo data and then
+# runs `docker compose up --build --watch --force-recreate` (Compose 2.25 or newer).
 #
 # Source is synced into the containers by Compose Watch (not bind mounts, whose file events are
 # unreliable on Windows and macOS), so the dev servers reload on save. Changing a dependency
 # manifest or lockfile rebuilds the image. --force-recreate starts from fresh containers, since a
 # reused one can still hold synced edits that were since undone on the host.
 #
-# Host ports can be changed in an optional root .env (see .env.example).
+# Host ports can be changed in an optional root .env (see .env.example). They are published on
+# 127.0.0.1, not on every network interface.
 
 name: tiwwsah
 
 x-supabase-keys:
-  # The Supabase CLI's fixed local keys (`npx supabase status`). Local stack only, never production.
+  # `npm run docker` passes the running stack's keys. The fallbacks are the pinned Supabase CLI's
+  # default local keys, for running `docker compose up` directly. Local stack only, never production.
   publishable: &publishable-key ${SUPABASE_PUBLISHABLE_KEY:-sb_publishable_ACJWlzQHlZjBrEguHvfOxg_3BJgxAaH}
   secret: &secret-key ${SUPABASE_SECRET_KEY:-sb_secret_N7UND0UgjKTVK-Uodkm0Hg_xSvEMPvz}
 
@@ -24,7 +26,7 @@ services:
   frontend:
     build: ./frontend/tiwwsah_webapp
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     environment:
       # Read by the browser on the host, so these are host URLs.
       NEXT_PUBLIC_SUPABASE_URL: http://127.0.0.1:54321
@@ -45,12 +47,15 @@ services:
       context: ./backend
       target: api
     ports:
-      - "${BACKEND_PORT:-8000}:8000"
+      - "127.0.0.1:${BACKEND_PORT:-8000}:8000"
     environment:
       # The backend talks to Supabase over the CLI's Docker network, by container name.
       SUPABASE_URL: http://supabase_kong_Trust-In-What-We-See-And-Hear:8000
       SUPABASE_PUBLISHABLE_KEY: *publishable-key
       SUPABASE_SECRET_KEY: *secret-key
+      # Handed to the browser in ws_url, so this is a host URL. The mock never uses the secret.
+      PIPELINE_WS_URL: ws://localhost:${PIPELINE_PORT:-8001}
+      PIPELINE_BACKEND_SECRET: local-dev-pipeline-secret
     networks:
       - supabase
     develop:
@@ -70,7 +75,7 @@ services:
       additional_contexts:
         voice-pipeline: ./voice-pipeline
     ports:
-      - "${PIPELINE_PORT:-8001}:8001"
+      - "127.0.0.1:${PIPELINE_PORT:-8001}:8001"
     develop:
       watch:
         - action: sync
