@@ -7,6 +7,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseEnv } from "node:util";
@@ -83,6 +84,37 @@ export function run(command, args, { cwd = ROOT, env, capture = false, allowFail
     fail(`\`${[path.basename(command), ...args].join(" ")}\` exited with code ${result.status}.`);
   }
   return result.stdout;
+}
+
+/**
+ * Fail with a clear message if one of `ports` (name -> port) is taken, rather than leaving a server
+ * to die with an OS error such as WinError 10013 while the others run on.
+ */
+export async function checkPortsFree(ports) {
+  // Connects rather than binds: on Windows a test bind can succeed next to a server on 0.0.0.0.
+  const answers = (port, host) =>
+    new Promise((resolve) => {
+      const socket = net.connect({ port: Number(port), host, timeout: 1000 });
+      const done = (result) => {
+        socket.destroy();
+        resolve(result);
+      };
+      socket.once("connect", () => done(true));
+      socket.once("error", () => done(false));
+      socket.once("timeout", () => done(false));
+    });
+  for (const [name, value] of Object.entries(ports)) {
+    if ((await answers(value, "127.0.0.1")) || (await answers(value, "::1"))) {
+      const fix =
+        name === "frontend"
+          ? "Stop whatever is using it (the frontend must run on 3000)."
+          : `Stop whatever is using it, or set ${name} in a root .env (see .env.example).`;
+      fail(
+        `Port ${value} is already in use. ${fix} If it is \`npm run docker\`'s containers, run ` +
+          "`docker compose down`.",
+      );
+    }
+  }
 }
 
 /** Whether a program can be started, e.g. `has("uv", ["--version"])`. */
