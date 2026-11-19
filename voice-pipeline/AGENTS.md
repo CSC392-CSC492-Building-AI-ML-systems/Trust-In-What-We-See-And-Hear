@@ -17,6 +17,9 @@ apart from the backend API because it needs a GPU.
   table of the other files.
 - `pod/`: scripts that set up and run the server on a GPU machine
   (`setup.sh`, `run.sh`, `voice_engine.sh`, `ming_server.py`).
+- `dev/`: development tools only, not part of the product: `pod.py` rents a
+  RunPod GPU and runs the pipeline there for test calls, with a browser
+  test page. Guide: `dev/POD.md`.
 - `tests/`: run without a GPU, using fake models behind the same boundaries.
 
 ## Run the tests
@@ -64,7 +67,9 @@ so it is skipped in the backend's environment. Run it where
   policy."). Add that line, naming the tool used, to new files and keep it
   on existing ones.
 - Never start or leave a GPU pod running unless the person you are working
-  with asks for it. It bills the team by the hour.
+  with asks for it. It bills the team by the hour. Start, check and stop
+  pods with `dev/pod.py` (see `dev/POD.md`), and run `status` first: a
+  teammate's pod may already be up.
 
 ## Current state (2026-11-17)
 
@@ -87,9 +92,9 @@ so it is skipped in the backend's environment. Run it where
   preferred so far, for its size. Both are wired in as `TTS_ENGINE=ming` and `drama`
   (`tts/served.py`, `pod/voice_engine.sh`, `pod/ming_server.py`) but have
   not run inside a call yet. Drama 3 needs an 80 GB card.
-- Before a GPU session, check a model's size against the GPU and read its
-  install notes before renting: most failed GPU sessions so far skipped one
-  of those.
+- Before a GPU session, read `dev/POD.md`, including its troubleshooting
+  table. Check a model's size against the GPU and read its install notes
+  before renting: most failed GPU sessions so far skipped one of those.
 - `BACKEND.md` is this side's proposal for how the backend starts a call and
   receives its result. The backend side has not agreed to it or built it yet.
   Change it together with `calls.BackendCalls`, the mock and `PROTOCOL.md`.
