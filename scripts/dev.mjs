@@ -16,6 +16,7 @@ import {
   LOCAL_PIPELINE_SECRET,
   checkDocker,
   checkNode,
+  checkPortsFree,
   fail,
   loadRootEnv,
   port,
@@ -37,6 +38,7 @@ for (const required of [
 ]) {
   if (!existsSync(required)) fail(`${required} is missing. Run \`npm run setup\` first.`);
 }
+await checkPortsFree({ frontend: "3000", BACKEND_PORT: backendPort, PIPELINE_PORT: pipelinePort });
 checkDocker();
 
 step("Starting the local Supabase stack and applying new migrations");
