@@ -1,5 +1,7 @@
 # Development image for the backend API, also used for the mock voice pipeline.
 # Built by the repository's compose.yaml; see the root README ("Local development").
+#
+# AI-assisted code (written with Claude Code), cited per the CSC398 AI policy.
 
 FROM python:3.14-slim AS base
 

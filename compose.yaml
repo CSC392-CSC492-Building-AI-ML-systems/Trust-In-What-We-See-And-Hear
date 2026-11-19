@@ -13,6 +13,8 @@
 #
 # Host ports can be changed in an optional root .env (see .env.example). They are published on
 # 127.0.0.1, not on every network interface.
+#
+# AI-assisted code (written with Claude Code), cited per the CSC398 AI policy.
 
 name: tiwwsah
 

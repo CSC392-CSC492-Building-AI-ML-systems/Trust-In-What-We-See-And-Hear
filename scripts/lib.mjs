@@ -3,6 +3,8 @@
 // Commands are spawned without a shell: npm and the Supabase CLI are run as Node scripts through
 // process.execPath, because Windows cannot spawn npm.cmd/npx.cmd directly, and a shell would make
 // quoting depend on the OS. Paths with spaces are passed as `cwd`, never interpolated.
+//
+// AI-assisted code (written with Claude Code), cited per the CSC398 AI policy.
 
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";

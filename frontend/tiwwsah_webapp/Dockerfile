@@ -1,5 +1,7 @@
 # Development image for the frontend (next dev). Built by the repository's compose.yaml; see the
 # root README ("Local development").
+#
+# AI-assisted code (written with Claude Code), cited per the CSC398 AI policy.
 
 FROM node:24-slim
 

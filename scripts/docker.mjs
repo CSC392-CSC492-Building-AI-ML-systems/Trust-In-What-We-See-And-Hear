@@ -7,6 +7,8 @@
 //
 // --force-recreate: Compose Watch copies edits into the running containers, so a container reused
 // from an earlier session can still hold edits that were since undone on the host.
+//
+// AI-assisted code (written with Claude Code), cited per the CSC398 AI policy.
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
