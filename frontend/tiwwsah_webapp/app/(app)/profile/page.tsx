@@ -43,12 +43,33 @@ export default function ProfilePage() {
     //useEffect(() => {  }, [loaded]);
 
     function mainPage(){
-        if (!editing){ information(); }
-        else { updateProfile(); }
+        if (!editing){ return (information()); }
+        else { return (updateProfile()); }
     }
 
+    // ASK ADRIEN ABOUT EDITING THE PF
     function updateProfile() {
-
+        return (
+            <div className="info_container">
+                <div className="profile">
+                    <div className="profile_icon"><UserRound aria-hidden="true"/></div>
+                    <button className="update_button"> Save Edits </button>
+                </div>
+                <div className="profile_info">
+                    <b>Username:</b>
+                    <br/>
+                    <div className="profile_text">{username}</div>
+                    <b>First Name:</b>
+                    <br/>
+                    <div className="profile_text">{firstName}</div>
+                    <b>Last Name:</b>
+                    <br/>
+                    <div className="profile_text">{lastName}</div>
+                    <b>Verification Status:</b>
+                    <br/>
+                    <div className="profile_text">{checkStatus()}</div>
+                </div>
+            </div>);
     }
 
     function information(){
@@ -60,19 +81,19 @@ export default function ProfilePage() {
                         <button className="update_button"> Edit Profile </button>
                     </div>
                     <div className="profile_info">
-                        Username:
+                        <b>Username:</b>
                         <br/>
                         <div className="loading_profile_text">{empty}</div>
                         <br/>
-                        First Name:
+                        <b>First Name:</b>
                         <br/>
                         <div className="loading_profile_text">{empty}</div>
                         <br/>
-                        Last Name:
+                        <b>Last Name:</b>
                         <br/>
                         <div className="loading_profile_text">{empty}</div>
                         <br/>
-                        Verification Status:
+                        <b>Verification Status:</b>
                         <br/>
                         <div className="loading_profile_text">{empty}</div>
                     </div>
@@ -87,16 +108,17 @@ export default function ProfilePage() {
                         <button className="update_button"> Edit Profile </button>
                     </div>
                     <div className="profile_info">
-                        Username:
+                        <b>Username:</b>
                         <br/>
                         <div className="profile_text">{username}</div>
-                        First Name:
+                        <b>First Name:</b>
                         <br/>
                         <div className="profile_text">{firstName}</div>
-                        Last Name:
+                        <b>Last Name:</b>
                         <br/>
                         <div className="profile_text">{lastName}</div>
-                        Verification Status:<br/>
+                        <b>Verification Status:</b>
+                        <br/>
                         <div className="profile_text">{checkStatus()}</div>
                     </div>
                 </div>);
@@ -105,8 +127,14 @@ export default function ProfilePage() {
 
   return (
       <section className="page">
+          <header className="page-header">
+              <div>
+                  <h1>Profile</h1>
+                  <p>Control how you're identified by others and review your verification status</p>
+              </div>
+          </header>
         <div className="profile_card">
-            {information()}
+            {mainPage()}
         </div>
       </section>
 
