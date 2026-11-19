@@ -38,11 +38,14 @@ for (const required of [
 ]) {
   if (!existsSync(required)) fail(`${required} is missing. Run \`npm run setup\` first.`);
 }
-await checkPortsFree({ frontend: "3000", BACKEND_PORT: backendPort, PIPELINE_PORT: pipelinePort });
+const devPorts = { frontend: "3000", BACKEND_PORT: backendPort, PIPELINE_PORT: pipelinePort };
+await checkPortsFree(devPorts);
 checkDocker();
 
 step("Starting the local Supabase stack and applying new migrations");
 prepareSupabase(supabase);
+// Again, in case Supabase has just taken one of them.
+await checkPortsFree(devPorts);
 
 const { default: concurrently } = await import("concurrently");
 

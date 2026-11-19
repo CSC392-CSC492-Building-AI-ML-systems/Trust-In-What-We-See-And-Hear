@@ -91,7 +91,14 @@ export function run(command, args, { cwd = ROOT, env, capture = false, allowFail
  * to die with an OS error such as WinError 10013 while the others run on.
  */
 export async function checkPortsFree(ports) {
-  // Connects rather than binds: on Windows a test bind can succeed next to a server on 0.0.0.0.
+  const entries = Object.entries(ports);
+  for (const [i, [name, value]] of entries.entries()) {
+    const other = entries.slice(i + 1).find(([, v]) => Number(v) === Number(value));
+    if (other) fail(`${name} and ${other[0]} are both port ${value}; give them different ports.`);
+  }
+  // Both checks are needed on Windows: a test bind there can succeed next to a server on 0.0.0.0,
+  // and a port in a reserved range (common with Hyper-V, WSL or Docker) refuses connections but
+  // cannot be bound.
   const answers = (port, host) =>
     new Promise((resolve) => {
       const socket = net.connect({ port: Number(port), host, timeout: 1000 });
@@ -103,14 +110,22 @@ export async function checkPortsFree(ports) {
       socket.once("error", () => done(false));
       socket.once("timeout", () => done(false));
     });
-  for (const [name, value] of Object.entries(ports)) {
-    if ((await answers(value, "127.0.0.1")) || (await answers(value, "::1"))) {
+  const bindable = (port) =>
+    new Promise((resolve) => {
+      const server = net.createServer();
+      server.once("error", () => resolve(false));
+      server.listen({ port: Number(port), host: "127.0.0.1", exclusive: true }, () =>
+        server.close(() => resolve(true)),
+      );
+    });
+  for (const [name, value] of entries) {
+    if ((await answers(value, "127.0.0.1")) || (await answers(value, "::1")) || !(await bindable(value))) {
       const fix =
         name === "frontend"
           ? "Stop whatever is using it (the frontend must run on 3000)."
           : `Stop whatever is using it, or set ${name} in a root .env (see .env.example).`;
       fail(
-        `Port ${value} is already in use. ${fix} If it is \`npm run docker\`'s containers, run ` +
+        `Port ${value} is in use or reserved. ${fix} If it is \`npm run docker\`'s containers, run ` +
           "`docker compose down`.",
       );
     }
