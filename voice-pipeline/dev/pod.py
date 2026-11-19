@@ -341,6 +341,9 @@ def create_pod(api: RunPod, args: argparse.Namespace, token: str,
                public_key: str) -> tuple[dict, dict]:
     need_gb, disk = ENGINES[args.engine]
     options = candidates(api, need_gb, args.max_price, args.community)
+    if args.gpu:
+        want = args.gpu.lower()
+        options = [g for g in options if want in g["name"].lower() or want in g["id"].lower()]
     if not options:
         raise PodError(f"No GPU with {need_gb} GB or more costs under ${args.max_price:.2f}/h. "
                        "Raise --max-price or try again later.")
@@ -682,6 +685,7 @@ def main() -> None:
     start.add_argument("--llm", help=f"LLM to serve (default {LLM_FOR_CARD})")
     start.add_argument("--max-price", type=float, default=2.5,
                        help="highest price per hour to accept, in USD (default 2.50)")
+    start.add_argument("--gpu", help="only rent this GPU type, e.g. L40S (default: the cheapest that fits)")
     start.add_argument("--community", action="store_true",
                        help="also try RunPod's community cloud (cheaper, less reliable)")
     start.add_argument("--idle-minutes", type=int, default=30,

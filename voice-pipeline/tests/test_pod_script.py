@@ -73,7 +73,7 @@ class LocalRemote(pod.Remote):
 
 
 def start_args(**kw):
-    base = dict(engine="chatterbox", max_price=2.5, community=False, idle_minutes=30,
+    base = dict(engine="chatterbox", gpu=None, max_price=2.5, community=False, idle_minutes=30,
                 llm=None, yes=True, another=False, voice=None)
     return Namespace(**{**base, **kw})
 
