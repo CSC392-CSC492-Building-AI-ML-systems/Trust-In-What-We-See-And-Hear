@@ -41,11 +41,14 @@ def warm_up(stt: RobustSTT, tts: ChatterboxEngine) -> None:
 
     Speech to text is warmed up with real speech (the voice engine's own
     output): silence skips the decoder, and on GPUs newer than CTranslate2's
-    build the first real call compiled kernels for about 10 s.
+    build the first real call compiled kernels for about 10 s. Engines with
+    no built-in voice (ming, drama) run as their own server, so only speech
+    to text is warmed up, on a made-up signal with its speech filter off.
     """
     voice = tts.builtin_voice()
     if voice is None:
-        log.warning("the voice engine has no built-in voice; skipping warm-up")
+        log.info("the voice engine has no built-in voice; warming up speech to text alone")
+        stt.warm_up()
         return
     pieces = list(tts.speak("Hey, it's me. Can you hear me okay? I need to ask you something.",
                             voice, first_in_turn=True))
