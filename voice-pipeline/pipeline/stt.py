@@ -35,6 +35,12 @@ HALLUCINATIONS = {
     "you", "bye", "so", "okay", "oh", "uh", "um", "hmm", "in", "beautiful",
     "thank you for watching", "please subscribe", "i'm sorry",
 }
+# Of those, the ones people really say on a call. "Okay." can be agreement
+# and "Bye." a hang-up. Real ones are short and Whisper is only moderately
+# sure of the words (avg_logprob -0.37 to -0.90 on recorded speech, in the
+# review of #14), but it is sure there was speech (no_speech_prob 0.0). So
+# these are rejected only when Whisper doubts there was speech at all.
+SHORT_ANSWERS = {"okay", "bye", "thank you", "thank you very much", "thanks", "i'm sorry"}
 
 
 def normalise(text: str) -> str:
@@ -88,12 +94,34 @@ class RobustSTT:
             reason = "too little speech"
         elif no_sp is not None and no_sp > self.max_no_speech_prob and avg_lp < self.min_avg_logprob:
             reason = "low confidence"
-        elif normalise(text) in HALLUCINATIONS and (
-                avg_lp < -0.5 or no_sp > 0.3 or speech_s < 1.0):
-            # Common phrases are only accepted when Whisper is clearly confident.
+        elif self.likely_hallucination(normalise(text), avg_lp, no_sp, speech_s):
             reason = "likely hallucination"
         # The numbers behind the decision, for tuning. Never the text.
         log.info("stt %s ms, %.1f s in, %.1f s speech, avg_logprob %s, no_speech %s, %s",
                  ms, audio_s, speech_s, None if avg_lp is None else round(avg_lp, 3),
                  None if no_sp is None else round(no_sp, 3), reason or "accepted")
         return Heard(text=text, accepted=not reason, reason=reason)
+
+    def likely_hallucination(self, phrase: str, avg_lp: float | None,
+                             no_sp: float | None, speech_s: float) -> bool:
+        """Whether a transcript is a phrase Whisper probably made up."""
+        if phrase not in HALLUCINATIONS or avg_lp is None or no_sp is None:
+            return False
+        if phrase in SHORT_ANSWERS:
+            return no_sp > 0.3 or avg_lp < self.min_avg_logprob
+        # Other common phrases are only accepted when Whisper is clearly confident.
+        return avg_lp < -0.5 or no_sp > 0.3 or speech_s < 1.0
+
+    def warm_up(self, seconds: float = 2.0) -> None:
+        """Run the encoder and decoder once, so the first call does not pay
+        for compiling kernels. The speech filter is off: it would skip the
+        decoder on audio that is not speech."""
+        import numpy as np
+
+        t = np.arange(int(16000 * seconds)) / 16000
+        # A rising tone with some noise: enough for the decoder to run.
+        audio = (0.2 * np.sin(2 * np.pi * (150 + 100 * t) * t)
+                 + 0.02 * np.random.default_rng(0).standard_normal(len(t))).astype(np.float32)
+        for _ in range(2):
+            list(self.model.transcribe(audio, language="en", beam_size=self.beam_size,
+                                       vad_filter=False, condition_on_previous_text=False)[0])

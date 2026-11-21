@@ -356,6 +356,16 @@ class SupabaseStorage:
                 return objects
             offset += len(page)
 
+    async def signed_url(self, bucket: str, path: str, expires_in_seconds: int) -> str:
+        """A link that downloads one private object, without a key, until it expires."""
+        body = await self._request(
+            "POST", f"/object/sign/{bucket}/{path}", json={"expiresIn": expires_in_seconds}
+        )
+        signed = body.get("signedURL") if isinstance(body, dict) else None
+        if not isinstance(signed, str) or not signed.startswith("/"):
+            raise SupabaseUnavailableError("Supabase Storage returned no signed URL.")
+        return f"{self._base_url}{signed}"
+
     async def remove(self, bucket: str, paths: list[str]) -> None:
         """Delete objects. Paths that do not exist are ignored, so retrying is safe."""
         for start in range(0, len(paths), REMOVE_BATCH_SIZE):

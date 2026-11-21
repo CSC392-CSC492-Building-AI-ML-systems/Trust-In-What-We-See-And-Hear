@@ -183,10 +183,28 @@ def test_malformed_evidence_is_rejected(changes):
     ("password", "My pin is the usual one.", True),
     ("card or account number", "It's 4519 2210 8812.", True),
     ("card or account number", "I can send $500.", False),
+    # Phrasings from the review of #14: the first group was missed before.
+    ("home address", "I'm at 45 Elm.", True),
+    ("home address", "Send it to 220 King West.", True),
+    ("date of birth", "The third of March, 1990.", True),
+    ("date of birth", "It's the 4th of July.", True),
+    ("password", "It's hunter2.", True),
+    ("password", "The code is 4821.", True),
+    ("password", "I won't tell you my PIN.", False),
+    ("password", "No. My pin is 1234.", True),
+    ("password", "I'll be there on the 21st.", False),
+    ("card or account number", "Call me at 416-555-1234.", False),
+    ("card or account number", "It's 4519 2210 8812, call me at 416-555-1234.", True),
 ])
 def test_a_detail_counts_only_if_the_trainee_said_something_like_it(kind, said, kept):
     result = parse_result(answer(details_shared=[kind]), TACTICS, trainee_text=said)
     assert result["sensitive_info_shared"] is kept
+
+
+def test_an_address_given_before_refusing_money_is_not_full_marks():
+    reply = answer(details_shared=["home address"], trainee_response="refused")
+    said = "I'm at 45 Elm. Actually no, I'm not sending money."
+    assert parse_result(reply, TACTICS, trainee_text=said)["outcome"] == "partially_complied"
 
 
 def test_a_kind_of_detail_that_is_not_listed_is_left_out():

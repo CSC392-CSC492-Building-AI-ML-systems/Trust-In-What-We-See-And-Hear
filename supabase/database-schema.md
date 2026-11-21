@@ -149,6 +149,10 @@ One row per pair of users, whichever of them sent the request.
 - `sendFriendRequest` inserts a `pending` row.
 - `acceptFriendRequest` sets it to `accepted`, which puts each user on the other's friends list.
 - `declineFriendRequest` and `removeFriend` delete the row, so the users can send a new request later.
+- `updateFriendNotes` sets the current user's own private note about the friend (migration 0005).
+  The row is shared, so each side has its own column, and clients cannot read either note column
+  directly (column privileges); only the backend returns a user's own note. A user's note about a
+  friend goes into the call context when that user starts a call with the friend's voice.
 
 ```sql
 create table public.friendships (
@@ -158,6 +162,8 @@ create table public.friendships (
   status        friendship_status not null default 'pending',
   created_at    timestamptz not null default now(),
   accepted_at   timestamptz,
+  requester_notes text check (char_length(requester_notes) <= 100),  -- requester's note about addressee (0005)
+  addressee_notes text check (char_length(addressee_notes) <= 100),  -- addressee's note about requester (0005)
   check (requester_id <> addressee_id)
 );
 
@@ -247,6 +253,7 @@ create table public.scam_scenarios (
   category        scam_category not null,
   difficulty      smallint not null default 2 check (difficulty between 1 and 3),
   description     text not null,                   -- shown to the user when choosing a scenario
+  ask             text,                            -- what the caller asks for (migration 0005); null = cannot start a call
   system_prompt   text not null,                   -- OpenAI prompt for the scammer agent
   red_flags       jsonb not null default '[]'::jsonb, -- ["urgency", "secrecy request", "gift cards"]
   max_duration_seconds int not null default 300,
@@ -263,6 +270,11 @@ create index scam_scenarios_created_by_idx on public.scam_scenarios(created_by);
 `consent_id`, `persona_user_id` and `scenario_id` are nullable so that call history survives when
 those rows are deleted. The backend requires all three when it creates a call.
 
+A call is `queued` when created, `in_progress` once the voice pipeline claims it with the one-time
+token, then `completed` when the pipeline reports a result, or `failed`. A call never claimed before
+`claim_expires_at`, or with no result long after it started, is failed as `timed_out` the next
+time its user reads their calls. See `backend/app/modules/calls/service.py`.
+
 ```sql
 create table public.calls (
   id                    uuid primary key default gen_random_uuid(),
@@ -278,8 +290,13 @@ create table public.calls (
   ended_at              timestamptz,
   duration_seconds      int,
   recording_storage_path text,                     -- optional; subject to retention policy
-  failure_reason        text,
-  created_at            timestamptz not null default now()
+  failure_reason        text,                     -- timed_out, error, not_scored or voice_unavailable
+  created_at            timestamptz not null default now(),
+  -- migration 0005: what the voice pipeline needs (voice-pipeline/BACKEND.md)
+  claim_token_hash      text,                     -- SHA-256 of the one-time token in ws_url; cleared when claimed
+  claim_expires_at      timestamptz,
+  call_context          jsonb,                    -- validated call context; cleared once the pipeline has it
+  max_duration_seconds  int check (max_duration_seconds > 0)
 );
 
 create index calls_user_id_created_at_idx on public.calls(user_id, created_at desc);
@@ -439,18 +456,21 @@ the frontend calls Supabase Auth directly, which writes `auth.users`.
 | `POST declineFriendRequest` | `friendships` | `friendships` (deletes row; addressee only) |
 | `GET getFriendsList` | `friendships`, `users` (safe fields) | – |
 | `DEL removeFriend` | `friendships` | `friendships` (deletes row) |
+| `PUT updateFriendNotes` | `friendships` | `friendships` (the current user's own notes column) |
 | `POST RequestConsent` | `friendships`, `voices` | `scam_consents` |
 | `POST AcceptConsent` | `scam_consents`, `friendships` | `scam_consents` (consenter only; sets `expires_at`) |
 | `POST DeclineConsent` | `scam_consents` | `scam_consents` (consenter only) |
 | `GET getConsents` | `scam_consents`, `users` (safe fields) | – |
-| `GET GetCallHistory` | `calls`, `call_results` (score/outcome) | – |
-| `GET GetCallDetails` | `calls`, `call_results` | – |
+| `POST StartCall` | `scam_scenarios`, `scam_consents`, `users` (names), `voices`, `friendships` (the user's note) | `scam_consents` (`used_at`), `calls` |
+| `GET GetCallHistory` | `calls`, `call_results` (score/outcome) | `calls` (fails stale calls) |
+| `GET GetCallDetails` | `calls`, `call_results` | `calls` (fails stale calls) |
 | `PUT uploadVoiceSample` | `voices` | Storage, `voices` |
 | `GET getVoice` | `voices` | – |
 | `DEL deleteVoice` | `voices` | Storage, `voices` (deletes row) |
 | `POST addScenario` | – | `scam_scenarios` |
 | `PUT UpdateScenario` | `scam_scenarios` | `scam_scenarios` (creator only) |
 | `DEL removeScenario` | `scam_scenarios` | `scam_scenarios` (creator only) |
-| Call pipeline (backend) | `calls` | `calls`, `call_results` |
+| Pipeline: claim a call | `calls`, `voices` | `calls`; signed Storage link to the sample |
+| Pipeline: report a result | `calls` | `calls`, `call_results` |
 
 ---

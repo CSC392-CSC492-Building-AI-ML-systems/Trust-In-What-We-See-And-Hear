@@ -94,6 +94,27 @@ the backend's sample call context, and its result can be read from
 (BACKEND.md), which does not have those endpoints yet. Other settings are
 environment variables, listed at the top of each module.
 
+## GPU runs so far
+
+As of 2026-11-17.
+
+- 2026-11-16 (A40): a person called it with their own recorded voice; first
+  audio about 1.2 s, scoring about 4 s, the `completed` ending worked. Found
+  there: the cloned voice sounded little like the speaker, replies ran 10 to
+  12 s, the caller changed its story and kept pushing after a yes, and every
+  call was graded `recognized_scam` 90.
+- 2026-11-17 (L40, then L40S): the caller prompt, reply limits and grading
+  `score-v2` worked in calls with a person, on Qwen3-8B and then
+  Qwen3-14B-FP8. Qwen3-32B does not fit beside the speech models on 48 GB;
+  `pod/setup.sh` now refuses a model that cannot fit.
+- Voice: on an H100, Ming-3.0-tts-0.5B and Fish Audio Drama 3 both sounded
+  much closer to the speaker than Chatterbox (one listener). Ming is
+  preferred so far, for its size. Both are wired in as `TTS_ENGINE=ming` and
+  `drama` (`tts/served.py`, `pod/voice_engine.sh`, `pod/ming_server.py`).
+  Drama 3 needs an 80 GB card.
+- `calls.BackendCalls` has not run against the real backend yet; only
+  `DevCalls` has.
+
 ## Grading checks
 
 The grader extracts the final decision, completed payment, disclosed detail

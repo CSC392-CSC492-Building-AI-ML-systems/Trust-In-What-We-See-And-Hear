@@ -71,46 +71,34 @@ so it is skipped in the backend's environment. Run it where
   pods with `dev/pod.py` (see `dev/POD.md`), and run `status` first: a
   teammate's pod may already be up.
 
-## Current state (2026-11-17)
+## How things work
 
-- The mock (PR #13) is merged into `main`, with its `POST /api/v1/calls`,
-  call results and `BACKEND.md`. `main`'s `BACKEND.md`, `PROTOCOL.md` and
-  `README.md` differ from this branch's only where they mention `pipeline/`.
-  The real pipeline is draft PR #14 (branch `voice-pipeline-port`).
-- Two GPU runs so far. 2026-11-16 (A40): a person called it with their own
-  recorded voice; first audio about 1.2 s, scoring about 4 s, the
-  `completed` ending worked. Found there: the cloned voice sounded little
-  like the speaker, replies ran 10 to 12 s, the caller changed its story
-  and kept pushing after a yes, and every call was graded
-  `recognized_scam` 90. Not yet tried: Chatterbox Turbo.
-- 2026-11-17 (L40, then L40S): the caller prompt, reply limits and grading
-  `score-v2` worked in calls with a person, on Qwen3-8B and then
-  Qwen3-14B-FP8. Qwen3-32B does not fit beside the speech models on 48 GB;
-  `pod/setup.sh` now refuses a model that cannot fit.
-- Voice: on an H100, Ming-3.0-tts-0.5B and Fish Audio Drama 3 both sounded
-  much closer to the speaker than Chatterbox (one listener). Ming is
-  preferred so far, for its size. Both are wired in as `TTS_ENGINE=ming` and `drama`
-  (`tts/served.py`, `pod/voice_engine.sh`, `pod/ming_server.py`) but have
-  not run inside a call yet. Drama 3 needs an 80 GB card.
-- Before a GPU session, read `dev/POD.md`, including its troubleshooting
-  table. Check a model's size against the GPU and read its install notes
-  before renting: most failed GPU sessions so far skipped one of those.
-- `BACKEND.md` is this side's proposal for how the backend starts a call and
-  receives its result. The backend side has not agreed to it or built it yet.
-  Change it together with `calls.BackendCalls`, the mock and `PROTOCOL.md`.
+Lasting notes. Dated results from GPU runs are in the README, under
+"GPU runs so far"; they go stale, so they are kept out of this file.
+
+- `BACKEND.md` is the contract between the backend and the pipeline. Both
+  sides are built (the backend's endpoints in #15). Change it together with
+  `calls.BackendCalls`, the mock and `PROTOCOL.md`.
 - Call setup: `calls.BackendCalls` (claims the call from the backend) when
   `PIPELINE_BACKEND_URL` is set, otherwise `calls.DevCalls` (one token, one
-  voice file, the sample context). Only `DevCalls` has run for real.
+  voice file, the sample context).
 - Call scoring (`scoring.py`): when a call ends, `session.wrap_up` scores it
   in a background task, reports it through `calls.report`, and clears the
   conversation. The LLM answers plain questions (did the trainee agree,
   refuse or stay undecided; whether payment was completed; which details
-  they gave; which tactics were used) and `parse_result` works out the outcome and keeps the score in
-  that outcome's range. Asking the LLM for the outcome directly was tried
-  first and it could be talked into full marks by the trainee.
+  they gave; which tactics were used) and `parse_result` works out the
+  outcome and keeps the score in that outcome's range. Asking the LLM for
+  the outcome directly was tried first and it could be talked into full
+  marks by the trainee.
 - Completed payment or credential disclosure takes precedence over a later
   refusal. Required grading evidence is validated before deriving outcomes.
-  `eval_grading.py` checks ten synthetic cases against a running LLM.
+  A detail kind the LLM lists is kept only if the trainee's words show a
+  trace of it (`scoring.shows_trace`). A miss there raises the grade, so
+  add a test case when you change those patterns. `eval_grading.py` checks
+  ten synthetic cases against a running LLM.
+- Before a GPU session, read `dev/POD.md`, including its troubleshooting
+  table. Check a model's size against the GPU and read its install notes
+  before renting: most failed GPU sessions so far skipped one of those.
 - Prompts can be tried without a GPU against Qwen3 8B on Ollama. Ollama
   ignores `repetition_penalty`, so it repeats itself more than vLLM does.
 

@@ -118,16 +118,43 @@ RESPONSES = ("agreed", "refused", "undecided")
 DETAIL_KINDS = ("home address", "date of birth", "password", "card or account number")
 _STREET = r"(street|st|avenue|ave|road|rd|drive|dr|lane|ln|boulevard|blvd|way|court|ct|crescent|cres|place|pl)"
 _MONTH = r"(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*"
+_ORDINAL = (r"(\d{1,2}(st|nd|rd|th)?|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth"
+            r"|tenth|eleventh|twelfth|\w+teenth|twentieth|twenty[- ]?\w+|thirtieth|thirty[- ]?first)")
 # What each kind of detail looks like in the trainee's words (parse_result).
-DETAIL_TRACES = {
-    "home address": re.compile(
-        rf"\b(my (home |street )?address|i live (at|on)|\d+\s+(\w+\s+){{1,3}}{_STREET})\b", re.I),
-    "date of birth": re.compile(
-        rf"\b(born|birthday|date of birth|{_MONTH}\.?\s+\d{{1,2}}|\d{{1,2}}[/-]\d{{1,2}}[/-]\d{{2,4}})\b",
-        re.I),
-    "password": re.compile(r"\b(password|passcode|pin)\b", re.I),
-    "card or account number": re.compile(r"\d[\d\s-]{5,}\d|\b(card|account) (number|is)\b", re.I),
+# The filter can only remove a kind the LLM listed, so a miss raises the
+# grade. The patterns lean towards keeping a kind. Each kind has words that
+# name it ("my pin"), which do not count inside a refusal ("I won't tell you
+# my pin"), and shapes of the detail itself ("45 Elm"), which always count.
+DETAIL_WORDS = {
+    "home address": re.compile(r"\b(my (home |street )?address|i live (at|on))\b", re.I),
+    "date of birth": re.compile(r"\b(born|birthday|date of birth)\b", re.I),
+    "password": re.compile(r"\b(password|passcode|pin|code)\b", re.I),
+    "card or account number": re.compile(r"\b(card|account) (number|is)\b", re.I),
 }
+DETAIL_SHAPES = {
+    # A number then a street suffix, or a number then a capitalised name
+    # ("45 Elm", "220 King West"): Whisper capitalises street names.
+    "home address": re.compile(
+        rf"\b(\d+\s+(\w+\s+){{1,3}}{_STREET}\b|\d{{1,5}}\s+(?-i:[A-Z])[a-z]+)", re.I),
+    "date of birth": re.compile(
+        rf"\b({_MONTH}\.?\s+\d{{1,2}}|{_ORDINAL}\s+of\s+{_MONTH}|\d{{1,2}}[/-]\d{{1,2}}[/-]\d{{2,4}}"
+        rf"|(19|20)\d\d)\b", re.I),
+    # Letters and digits in one word ("hunter2"), but not "21st".
+    "password": re.compile(r"\b(?!\d+(st|nd|rd|th)\b)(?=[a-z]*\d)(?=\d*[a-z])[a-z\d]{4,}\b", re.I),
+    "card or account number": re.compile(r"\d[\d\s-]{5,}\d"),
+}
+_REFUSAL = re.compile(r"\b(won't|will not|wouldn't|not|never|don't|do not|can't|cannot)\b[^.,;!?]*",
+                      re.I)
+_PHONE = re.compile(r"\(?\b\d{3}\)?[\s.-]?\d{3}[\s.-]\d{4}\b")
+
+
+def shows_trace(kind: str, text: str) -> bool:
+    """Whether the trainee's words show a trace of this kind of detail."""
+    if DETAIL_WORDS[kind].search(_REFUSAL.sub(" ", text)):
+        return True
+    if kind == "card or account number":
+        text = _PHONE.sub(" ", text)  # a phone number is not a card number
+    return bool(DETAIL_SHAPES[kind].search(text))
 CALL_START, CALL_END = "CALL START", "CALL END"
 AFTER_CALL = "Grade the trainee in the call above. Reply with the JSON object only."
 # The score must agree with the outcome, whatever the LLM wrote.
@@ -243,7 +270,7 @@ def parse_result(reply: str, tactics: list[str],
         # Kept only where the trainee's own words show a trace of it: on a
         # GPU run the LLM counted an address the caller said as one the
         # trainee gave, and marked a paying trainee as sharing it.
-        kinds = {k for k in kinds if DETAIL_TRACES[k].search(trainee_text)}
+        kinds = {k for k in kinds if shows_trace(k, trainee_text)}
     shared = bool(kinds)
     pushed_back = response == "refused"
     if payment_sent or kinds & {"password", "card or account number"} or response == "agreed":
