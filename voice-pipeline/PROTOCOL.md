@@ -4,7 +4,8 @@ One WebSocket is one call. The browser streams the microphone continuously
 (hands-free) and receives the caller's speech as audio chunks with their text.
 
 Status: draft. `mock_server.py` implements this without a GPU, so the
-frontend can build against it. The real server will send the same messages.
+frontend can build against it. The real server (`pipeline/`) sends the same
+messages. Items marked **TBD** are not settled.
 
 ## Connecting
 
@@ -54,7 +55,9 @@ line is turn 1.
 `call_ended.reason` is one of:
 
 - `hangup`: the client sent `hangup`
-- `time_limit`: the scenario's `max_duration_seconds` ran out
+- `time_limit`: the scenario's `max_duration_seconds` ran out. The real
+  server also sends this if `answered` has not arrived 60 seconds after
+  `ready`, so an unanswered call does not hold a line. The mock waits forever.
 - `completed`: the caller ended the call (the scam reached its end). The
   real server sends this after the client reports the last turn as `played`,
   so the caller's last line is heard. The mock sends it straight away.
@@ -129,8 +132,9 @@ not keep transcripts, so this is the only place it can be done). The client
 uploads nothing. After `call_ended` it polls `GET /api/v1/calls/<call_id>`
 until `status` is `completed` or `failed`, which takes a few seconds.
 
-The real scoring is not built yet. The mock serves this endpoint itself with
-canned results, so the result screen can be built now. The fields are the
+The mock serves this endpoint itself with canned results, so the result
+screen can be built now. The real pipeline scores the call with its LLM, and
+the backend will serve what it stores. The fields are the
 ones in the database's `call_results` table (proposed in
 [BACKEND.md](BACKEND.md)):
 
@@ -157,7 +161,8 @@ ones in the database's `call_results` table (proposed in
   will be no result. `summary` is `null` until `completed`.
 - `outcome`: `recognized_scam`, `partially_complied`, `fully_complied`, or
   `inconclusive` (the call was too short to judge).
-- `score`: 0 to 100, higher means the user handled the call better.
+- `score`: 0 to 100, higher means the user handled the call better. It is
+  `null` for `inconclusive`, where a score would mean nothing.
 - An unknown call ID gets a 404.
 
 In the mock, the result is picked by how many times the user spoke (0, 1 or

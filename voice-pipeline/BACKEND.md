@@ -1,8 +1,9 @@
 # What the pipeline needs from the backend (proposal)
 
 How a call gets from `POST /api/v1/calls` to the voice pipeline and back.
-The backend side is built: `backend/app/modules/calls/router.py` (sections 1
-and 4) and `internal.py` (sections 2 and 3). Names follow
+Both sides are built: the backend in `backend/app/modules/calls/router.py`
+(sections 1 and 4) and `internal.py` (sections 2 and 3), the pipeline in
+`pipeline/calls.py` (`BackendCalls`). Names follow
 `supabase/database-schema.md`.
 
 The pipeline never reads the database or Storage itself. It holds one secret
@@ -73,10 +74,12 @@ to `in_progress` with `started_at`, and answers:
   (example: `sample_call_context.json`).
 - `voice_url`: a signed Supabase Storage link to the persona's
   `voices.sample_storage_path`, valid for at least 60 seconds. It must be
-  `https` and a WAV of at most 25 MB (the upload endpoint already makes mono
+  `https` (plain `http` is accepted only from `localhost`, for a local
+  Supabase) and a WAV of at most 25 MB (the upload endpoint already makes mono
   WAV). The pipeline downloads it once, deletes its copy when the voice is
   ready, and keeps nothing after the call.
-- `max_duration_seconds`: from the scenario. The pipeline caps it at 600.
+- `max_duration_seconds`: from the scenario. It must be more than 0, or the
+  call fails to set up. The pipeline caps it at 600.
 
 Answers the pipeline understands:
 
@@ -84,7 +87,7 @@ Answers the pipeline understands:
 |---|---|---|
 | 200 | the call may start | `ready` |
 | 403 | token wrong, expired or already used | socket closed, code `4401` |
-| 404 | no such call | socket closed, code `4401` |
+| 404, 422 | no such call, or the ID is not a UUID | socket closed, code `4401` |
 | anything else, or no answer in 10 s | backend problem | `error` `setup_failed`, then `call_ended` |
 
 If the pipeline has no free line it says `busy` without claiming, so the
@@ -96,10 +99,13 @@ stays `in_progress`. The backend should mark such calls `failed` after
 
 ## 3. Handing over the result: `POST /api/v1/internal/calls/<call id>/result`
 
-Sent by the pipeline after every call that was claimed, a few seconds after
-it ends, with the same `Authorization` header. The backend answers `204`, and
-also `204` for a call that is already finished, so the same report can be
-sent twice. A call that was never claimed gets `409`.
+Sent by the pipeline (`pipeline/scoring.py`, `BackendCalls.report`) after
+every call that was claimed, a few seconds after it ends, with the same
+`Authorization` header. If the backend is down or answers 429 or 5xx, the
+pipeline tries twice more over about five seconds and then gives up. The
+backend answers `204`, and also `204` for a call that is already finished,
+so the same report can be sent twice. A call that was never claimed gets
+`409`.
 
 ```json
 {
@@ -122,8 +128,12 @@ sent twice. A call that was never claimed gets `409`.
 - `ended_by`: the `call_ended` reason (`hangup`, `time_limit`, `completed`,
   `error`).
 - `result` matches the `call_results` table column for column. It is `null`
-  when the call could not be scored. A call too short to judge is scored as
-  `inconclusive`.
+  when the call could not be scored, or never started.
+- A call where the user said nothing is `inconclusive` with a `score` of 0.
+  The score means nothing for that outcome, so the backend serves it as
+  `null`.
+- `red_flags_noticed` and `red_flags_missed` only contain values from the
+  scenario's `tactics`, when it has any.
 - The backend stores the result, sets `ended_at` and `duration_seconds`, and
   sets the call to `completed`, or `failed` when `ended_by` is `error` or
   `result` is `null`.
@@ -170,8 +180,8 @@ frontend can build against them now.
 
 The pipeline runs on a rented GPU machine, so the backend must be reachable
 from the internet over `https` for this to work. Without
-`PIPELINE_BACKEND_URL` the pipeline uses one fixed token and voice file,
-which is how it is tested today.
+`PIPELINE_BACKEND_URL` the pipeline uses one fixed token and voice file
+(`DevCalls`), which is how it is tested today.
 
 ## Still open
 
