@@ -34,7 +34,9 @@ You can close the window during setup and check on it later with `status`.
 
 ## Making a call
 
-Open the link, press Call, then Answer, and talk. Use headphones so the
+Open the link. To hear the caller in your own voice, record 10 to 20
+seconds on the page first; otherwise it uses the `--voice` file. Press Call,
+then Answer, and talk. Use headphones so the
 caller does not hear itself. The score and feedback appear after you hang
 up. The link may show a 404 for the first minute.
 
@@ -43,9 +45,8 @@ Anyone with the link can make calls, so only share it in the team channel.
 ## Sharing the pod
 
 The team shares one pod. If one is running, `start` gives you its link
-instead of renting another. Every call uses the voice of whoever started
-it. To try your own voice, wait until the others are done, then `stop` and
-`start` with your recording.
+instead of renting another. A call uses the voice recorded on the test
+page, or else the `--voice` file of whoever started the pod.
 
 ## Options for `start`
 
@@ -53,6 +54,7 @@ it. To try your own voice, wait until the others are done, then `stop` and
 |---|---|
 | `--engine chatterbox` | Use the Chatterbox voice instead of Ming |
 | `--max-price 1.5` | Highest hourly price to accept (default 2.50) |
+| `--gpu L40S` | Only rent this GPU type (default: the cheapest that fits) |
 | `--community` | Also try RunPod's cheaper, less reliable community cloud |
 | `--idle-minutes 60` | Minutes without a call before it stops itself (default 30) |
 
