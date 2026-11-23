@@ -228,11 +228,22 @@ async def _voice_url(
         or not voices[0]["sample_storage_path"]
     ):
         return None
-    return await storage.signed_url(
+    link = await storage.signed_url(
         settings.voice_samples_bucket,
         voices[0]["sample_storage_path"],
         settings.call_voice_url_valid_seconds,
     )
+    return pipeline_link(link, settings.pipeline_supabase_url)
+
+
+def pipeline_link(link: str, pipeline_supabase_url: str | None) -> str:
+    """The Storage link with Supabase's address as the pipeline reaches it."""
+    if not pipeline_supabase_url:
+        return link
+    path = link.find("/storage/v1/")
+    if path < 0:
+        return link
+    return pipeline_supabase_url.rstrip("/") + link[path:]
 
 
 async def _fail(supabase_db: SupabaseDatabase, call_id: UUID, reason: str) -> None:

@@ -480,6 +480,23 @@ def test_claim_call(api, db, storage_requests):
     assert body(storage_requests[0]) == {"expiresIn": 300}
 
 
+def test_claim_voice_url_uses_pipeline_supabase_url(application, api, db):
+    # A local Supabase behind a tunnel: the pipeline gets the tunnel's address.
+    application.state.settings.pipeline_supabase_url = "https://tunnel.example/"
+    db.on("GET", "calls", rows(stored_call()))
+    db.on("PATCH", "calls", rows({"id": str(CALL_ID)}))
+    db.on("GET", "voices", rows({"status": "ready", "sample_storage_path": SAMPLE_PATH}))
+
+    response = api.post(
+        f"/api/v1/internal/calls/{CALL_ID}/claim", json={"token": TOKEN}, headers=PIPELINE
+    )
+
+    assert response.status_code == 200
+    assert response.json()["voice_url"] == (
+        f"https://tunnel.example/storage/v1/object/sign/voice-samples/{SAMPLE_PATH}?token=signed"
+    )
+
+
 def test_claim_unknown_call_is_404(api, db):
     db.on("GET", "calls", rows())
     response = api.post(

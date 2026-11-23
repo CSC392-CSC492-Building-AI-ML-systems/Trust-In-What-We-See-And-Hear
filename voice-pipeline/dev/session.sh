@@ -9,8 +9,9 @@
 # (pod.py shows it). The
 # current step is in /root/stage: setup, server, ready or failed.
 #
-# Settings (pod.py sets them): PIPELINE_DEV_TOKEN, TTS_ENGINE, LLM_MODEL,
-# VLLM_UTIL, IDLE_MINUTES (default 30).
+# Settings (pod.py sets them): PIPELINE_DEV_TOKEN, or PIPELINE_BACKEND_URL and
+# PIPELINE_BACKEND_SECRET in backend mode; TTS_ENGINE, LLM_MODEL, VLLM_UTIL,
+# IDLE_MINUTES (default 30).
 #
 # AI-assisted code (written with Claude Code), cited per the CSC398 AI policy.
 set -uo pipefail
@@ -134,8 +135,14 @@ wait $SETUP || fail "the setup step stopped with an error." /root/setup.log
 stage server
 say "Step $STEPS of $STEPS: starting the call server. Loading the speech models takes 1 to 3 minutes."
 cd /root/app
-PIPELINE_DEV_VOICE=$VOICE PIPELINE_TEST_PAGE=$HERE/dev/call.html TTS_ENGINE=$ENGINE \
-  setsid nohup bash "$HERE/pod/run.sh" > /root/server.log 2>&1 < /dev/null &
+if [ -n "${PIPELINE_BACKEND_URL:-}" ]; then
+  # Backend mode: calls and voices come from the backend, so no test page.
+  say "Calls come from the backend at $PIPELINE_BACKEND_URL."
+  TTS_ENGINE=$ENGINE setsid nohup bash "$HERE/pod/run.sh" > /root/server.log 2>&1 < /dev/null &
+else
+  PIPELINE_DEV_VOICE=$VOICE PIPELINE_TEST_PAGE=$HERE/dev/call.html TTS_ENGINE=$ENGINE \
+    setsid nohup bash "$HERE/pod/run.sh" > /root/server.log 2>&1 < /dev/null &
+fi
 for i in $(seq 1 120); do
   curl -sf localhost:8000/health >/dev/null && break
   pgrep -f "uvicorn.*pipeline.server" >/dev/null || [ "$i" -lt 6 ] \

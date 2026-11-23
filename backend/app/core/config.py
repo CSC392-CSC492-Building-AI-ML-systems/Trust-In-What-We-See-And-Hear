@@ -54,6 +54,11 @@ class Settings(BaseSettings):
     call_claim_valid_seconds: int = Field(default=120, gt=0)
     # How long the signed link to the persona's voice sample works.
     call_voice_url_valid_seconds: int = Field(default=300, ge=60)
+    # Supabase's address as the pipeline reaches it, when that is not
+    # SUPABASE_URL: a pipeline on a rented GPU cannot open links to a local
+    # Supabase, so they go through a tunnel (voice-pipeline/dev/tunnels.py).
+    # The voice links in a claim use it. Unset: SUPABASE_URL.
+    pipeline_supabase_url: str | None = None
     # A call still in progress this long after it started never got a result
     # (the pipeline caps calls at 600 s, plus time for scoring), so it is failed.
     call_result_timeout_seconds: int = Field(default=15 * 60, gt=0)
