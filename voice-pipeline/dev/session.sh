@@ -20,6 +20,9 @@ ENGINE=${TTS_ENGINE:-ming}
 # Chatterbox runs inside the call server; the others need a step of their own.
 STEPS=3; [ "$ENGINE" = chatterbox ] || STEPS=4
 VOICE=/root/voice.wav
+# setup.sh's uv cache: uv downloads there and fills /root/venvs only at the
+# end, so the install progress counts both.
+UV_CACHE=/root/uv-cache
 
 # Each line goes to session.log and to the pod's container log, which RunPod's
 # API serves to any teammate's key (pod.py status and logs read it there).
@@ -114,7 +117,7 @@ while kill -0 $SETUP 2>/dev/null; do
   if [ $((SECONDS - last_report)) -ge 30 ]; then
     last_report=$SECONDS
     case $step in
-      1) say "  still installing: $(size_gb /root/venvs) GB of packages so far" ;;
+      1) say "  still installing: $(size_gb $UV_CACHE /root/venvs) GB of packages so far" ;;
       2) now=$(size_gb /root/hf)
          if [ "$now" = "${last_size:-}" ] && [ "$now" != 0.0 ]; then
            say "  downloaded ($now GB); loading it onto the GPU"
@@ -122,7 +125,7 @@ while kill -0 $SETUP 2>/dev/null; do
            say "  still downloading the language model: $now GB so far"
          fi
          last_size=$now ;;
-      3) [ "$ENGINE" != chatterbox ] && say "  still setting up the voice engine ($(size_gb /root/venvs /root/hf) GB on disk)" ;;
+      3) [ "$ENGINE" != chatterbox ] && say "  still setting up the voice engine ($(size_gb $UV_CACHE /root/venvs /root/hf) GB on disk)" ;;
     esac
   fi
 done
