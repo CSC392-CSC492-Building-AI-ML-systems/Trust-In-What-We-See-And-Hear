@@ -173,8 +173,6 @@ backend's other fields (`consent_id`, `scenario_id`).
 
 ## Not decided yet
 
-- The backend has not agreed to BACKEND.md yet, so `ws_url` and the result
-  fields can still change.
 - Whether caller audio moves from WAV-per-message to raw binary PCM later
   (smaller, and playback can start sooner).
 - Interruption.

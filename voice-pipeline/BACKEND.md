@@ -1,4 +1,4 @@
-# What the pipeline needs from the backend (proposal)
+# What the pipeline needs from the backend
 
 How a call gets from `POST /api/v1/calls` to the voice pipeline and back.
 Both sides are built: the backend in `backend/app/modules/calls/router.py`
