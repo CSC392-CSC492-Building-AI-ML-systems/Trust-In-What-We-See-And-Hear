@@ -19,7 +19,8 @@ pytest.importorskip("soundfile")
 httpx = pytest.importorskip("httpx")
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
-from pipeline.tts.served import RATE, DramaEngine, MingEngine, to_pcm16  # noqa: E402
+from pipeline.tts.served import (  # noqa: E402
+    RATE, DramaEngine, MingEngine, StreamResampler, audio_events, to_pcm16)
 
 
 def wav(seconds: float, rate: int) -> bytes:
@@ -78,7 +79,8 @@ def test_ming_sends_the_recording_and_its_words(recording):
 def test_drama_sends_the_recording_as_a_data_url(recording):
     seen = []
     engine = DramaEngine("http://drama/v1/audio/speech", lambda p: "Hello there.",
-                         client=served(wav(1.0, 44100), seen))
+                         client=served(wav(1.0, 44100), seen), stream=False)
+    engine.warmed = True
     list(engine.speak("Send the money.", engine.prepare_voice(str(recording))))
     [(_, body)] = seen
     assert body["model"] == "fishaudio/drama-3" and body["input"] == "Send the money."
@@ -91,3 +93,151 @@ def test_a_server_error_reaches_the_turn(recording):
     engine = MingEngine("http://ming/speak", lambda p: "Hi there.", client=client)
     with pytest.raises(httpx.HTTPStatusError):
         list(engine.speak("Hello.", engine.prepare_voice(str(recording))))
+
+
+# Drama streaming
+
+SOURCE = 44_100
+
+
+def tone(seconds: float, rate: int = SOURCE, hz: float = 220.0, level: float = 0.3) -> bytes:
+    t = np.arange(int(rate * seconds)) / rate
+    return (np.sin(2 * np.pi * hz * t) * level * 32767).astype("<i2").tobytes()
+
+
+def silence(seconds: float, rate: int = SOURCE) -> bytes:
+    return bytes(2 * int(rate * seconds))
+
+
+def sse(*chunks: bytes, done: dict | None = None, chunk_seconds: float = 0.1) -> bytes:
+    """vLLM-Omni's event stream for these PCM chunks, split into short deltas."""
+    out = []
+    step = 2 * int(SOURCE * chunk_seconds)
+    for pcm in chunks:
+        for i in range(0, len(pcm), step):
+            event = {"type": "speech.audio.delta", "response_format": "pcm",
+                     "audio": base64.b64encode(pcm[i:i + step]).decode(),
+                     "sample_rate": SOURCE, "channels": 1}
+            out.append(f"event: speech.audio.delta\ndata: {json.dumps(event)}\n\n")
+    final = {"type": "speech.audio.done", "duration": 1.0, **(done or {})}
+    out.append(f"event: speech.audio.done\ndata: {json.dumps(final)}\n\n")
+    return "".join(out).encode()
+
+
+def streaming(body: bytes, seen: list) -> DramaEngine:
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, content=body,
+                              headers={"content-type": "text/event-stream"})
+    engine = DramaEngine("http://drama/v1/audio/speech", lambda p: "Hello there.",
+                         client=httpx.Client(transport=httpx.MockTransport(handler)))
+    engine.warmed = True  # warming up has its own test
+    return engine
+
+
+def seconds_of(pieces) -> float:
+    return sum(p.seconds for p in pieces)
+
+
+def test_drama_asks_for_a_stream(recording):
+    seen = []
+    engine = streaming(sse(tone(1.0)), seen)
+    list(engine.speak("Send the money.", engine.prepare_voice(str(recording))))
+    [body] = seen
+    assert body["stream"] is True and body["stream_format"] == "sse"
+    assert body["response_format"] == "pcm"
+    assert body["ref_audio"].startswith("data:audio/wav;base64,")
+
+
+def test_streamed_audio_comes_out_in_pieces_at_the_protocol_rate(recording):
+    engine = streaming(sse(tone(2.0)), [])
+    pieces = list(engine.speak("Send the money now please.",
+                               engine.prepare_voice(str(recording))))
+    assert all(p.sample_rate == RATE for p in pieces)
+    assert len(pieces) >= 3  # not one sentence-long piece
+    assert pieces[0].seconds < 0.35  # the first piece goes out early
+    assert seconds_of(pieces) == pytest.approx(2.0, abs=0.05)
+
+
+def test_a_sentence_ends_after_a_second_of_silence(recording):
+    # The model keeps emitting silence after the words (the recipe warns of it).
+    engine = streaming(sse(tone(1.0), silence(5.0)), [])
+    pieces = list(engine.speak("Send it.", engine.prepare_voice(str(recording))))
+    # The silence is not sent (give or take the 0.1 s chunk where the tone stops).
+    assert seconds_of(pieces) == pytest.approx(1.0, abs=0.15)
+
+
+def test_a_pause_inside_a_sentence_is_kept(recording):
+    engine = streaming(sse(tone(1.0), silence(0.5), tone(1.0)), [])
+    pieces = list(engine.speak("Wait, listen to me.", engine.prepare_voice(str(recording))))
+    assert seconds_of(pieces) == pytest.approx(2.5, abs=0.1)
+
+
+def test_leading_silence_does_not_end_the_sentence(recording):
+    engine = streaming(sse(silence(1.5), tone(1.0)), [])
+    pieces = list(engine.speak("Hello.", engine.prepare_voice(str(recording))))
+    assert seconds_of(pieces) == pytest.approx(2.5, abs=0.1)
+
+
+def test_a_runaway_sentence_is_cut_at_its_length_cap(recording):
+    engine = streaming(sse(tone(30.0)), [])  # sound that never ends
+    pieces = list(engine.speak("Send it.", engine.prepare_voice(str(recording))))
+    assert engine.max_seconds("Send it.") == pytest.approx(3.2)
+    assert seconds_of(pieces) == pytest.approx(3.2, abs=0.2)
+
+
+def test_an_error_event_reaches_the_turn(recording):
+    error = {"type": "speech.audio.error", "error": {"message": "out of memory"}}
+    body = f"event: speech.audio.error\ndata: {json.dumps(error)}\n\n".encode()
+    engine = streaming(body, [])
+    with pytest.raises(RuntimeError, match="out of memory"):
+        list(engine.speak("Hello.", engine.prepare_voice(str(recording))))
+
+
+def test_a_truncated_sentence_is_logged(recording, caplog):
+    engine = streaming(sse(tone(1.0), done={"truncated": True}), [])
+    list(engine.speak("Hello.", engine.prepare_voice(str(recording))))
+    assert "token limit" in caplog.text
+
+
+def test_events_are_read_one_at_a_time():
+    # Each delta is handed on before the next line is read, so audio streams.
+    read = []
+
+    def lines():
+        for line in sse(tone(0.3), chunk_seconds=0.1).decode().split("\n"):
+            read.append(line)
+            yield line
+    events = audio_events(lines())
+    next(events)
+    assert len(read) < 5
+
+
+def test_resampling_does_not_depend_on_how_the_stream_is_cut():
+    audio = np.frombuffer(tone(1.0, hz=440.0), dtype="<i2").astype(np.float32) / 32768
+    whole = StreamResampler(SOURCE).feed(audio)
+    parts, start = [], 0
+    resampler = StreamResampler(SOURCE)
+    for size in [1, 7, 300, 1234, 5, 4410, 99999]:
+        parts.append(resampler.feed(audio[start:start + size]))
+        start += size
+    assert np.allclose(np.concatenate(parts), whole, atol=1e-6)
+    assert len(whole) == pytest.approx(RATE, abs=2)
+
+
+def test_resampling_keeps_speech_frequencies():
+    audio = np.frombuffer(tone(1.0, hz=1000.0), dtype="<i2").astype(np.float32) / 32768
+    out = StreamResampler(SOURCE).feed(audio)[200:-200]
+    spectrum = np.abs(np.fft.rfft(out))
+    peak_hz = np.argmax(spectrum) * RATE / len(out)
+    assert peak_hz == pytest.approx(1000.0, abs=5)
+    assert np.sqrt(np.mean(out * out)) == pytest.approx(0.3 / np.sqrt(2), rel=0.05)
+
+
+def test_drama_warms_up_once_when_the_first_voice_is_prepared(recording):
+    seen = []
+    engine = streaming(sse(tone(0.5)), seen)
+    engine.warmed = False
+    engine.prepare_voice(str(recording))
+    engine.prepare_voice(str(recording))
+    assert len(seen) == 1  # one throwaway sentence, for the first call only

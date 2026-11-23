@@ -53,6 +53,7 @@ page, or else the `--voice` file of whoever started the pod.
 | Option | Meaning |
 |---|---|
 | `--engine chatterbox` | Use the Chatterbox voice instead of Ming |
+| `--engine drama` | Use Fish Audio Drama 3, which streams its audio so the caller starts sooner. Needs an 80 GB card (about $2.10/h) |
 | `--max-price 1.5` | Highest hourly price to accept (default 2.50) |
 | `--gpu L40S` | Only rent this GPU type (default: the cheapest that fits) |
 | `--community` | Also try RunPod's cheaper, less reliable community cloud |
