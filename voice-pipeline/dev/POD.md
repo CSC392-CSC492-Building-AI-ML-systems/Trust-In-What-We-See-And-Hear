@@ -61,10 +61,20 @@ page, or else the `--voice` file of whoever started the pod.
 
 ## With the backend
 
-`start --backend` runs the pod the way the app will use it: the backend
-hands out calls, the pod claims them, downloads the persona's voice from
-Supabase Storage and reports the score back. There is no test page and no
-`--voice`. Calls start from the app, or from `backend_call.py` below.
+`start --backend` runs the pod the way the app will use it. A call goes:
+
+1. The app calls `POST /api/v1/calls`. The backend checks the consent and
+   returns the pod's address with a one-time token.
+2. The browser connects to the pod. The pod claims the call from the
+   backend with the token and the shared secret, and gets the scenario and
+   a signed link to the persona's voice.
+3. The pod downloads the voice, and the call runs between the browser and
+   the pod.
+4. After the call, the pod sends the score to the backend, and the app
+   reads it from `GET /api/v1/calls/<id>`.
+
+There is no test page and no `--voice`. Calls start from the app, or from
+`backend_call.py` below.
 
 The pod is on RunPod's network, so it can't reach `localhost`. For a
 backend on your computer, `tunnels.py` gives it two public addresses
