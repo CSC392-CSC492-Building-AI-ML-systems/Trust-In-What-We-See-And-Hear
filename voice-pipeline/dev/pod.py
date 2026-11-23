@@ -48,12 +48,15 @@ REPO = Path(__file__).resolve().parents[2]
 STATE = Path.home() / ".tiwwsah"
 KEY_FILE = STATE / "runpod-api-key.txt"
 SSH_KEY = STATE / "pod-ssh-key"  # made by this script; its public half goes to each pod it starts
+LOG_START = "---session-log---"  # separates the stage from the log in follow()
 LOG_MARK = "[voice-pipeline] "  # session.sh's lines in the pod's container log
 POD_NAME = "voice-pipeline-test"  # every pod this script makes has this name
 IMAGE = "runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404"
 MIN_CUDA = "12.8"  # the image needs a host with CUDA 12.8 or newer
 UPLOAD = ["voice-pipeline", "backend/app"]  # the pipeline reads backend/app's call context rules
 SKIP_DIRS = {".venv", "venv", "__pycache__", ".pytest_cache", "node_modules", ".mypy_cache"}
+SKIP_SUFFIXES = (".wav", ".mp3", ".m4a", ".flac", ".ogg", ".webm", ".aac")
+GONE = ("TERMINATED", "EXITED")  # statuses of a pod that is not running or starting
 
 # What each voice engine needs: GPU memory (GB) and container disk (GB).
 ENGINES = {
@@ -313,19 +316,38 @@ def candidates(api: RunPod, need_gb: int, max_price: float, community: bool) -> 
 
 # ---------------------------------------------------------------- start
 
+def never_upload(relative: str) -> bool:
+    """Files that stay on this computer even if git does not ignore them:
+    credentials and recordings (the voice goes up separately)."""
+    name = relative.rsplit("/", 1)[-1].lower()
+    return name.startswith(".env") or name.endswith(SKIP_SUFFIXES)
+
+
+def files_to_upload() -> list[str]:
+    """The files under UPLOAD, as paths relative to the repo with forward
+    slashes: what git tracks, plus new files it does not ignore. Without
+    git, every file except caches."""
+    for top in UPLOAD:
+        if not (REPO / top).is_dir():
+            raise PodError(f"{REPO / top} is missing. Run this from a full copy of the repository.")
+    try:
+        out = subprocess.run(["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard",
+                              "--", *UPLOAD], cwd=REPO, capture_output=True, check=True).stdout
+        found = [f for f in out.decode().split("\0") if f]
+    except (OSError, subprocess.CalledProcessError):
+        found = []
+        for top in UPLOAD:
+            for root, dirs, files in os.walk(REPO / top):
+                dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+                found += [(Path(root) / f).relative_to(REPO).as_posix() for f in files]
+    return sorted(f for f in set(found) if not never_upload(f) and (REPO / f).is_file())
+
+
 def make_archive() -> bytes:
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
-        for top in UPLOAD:
-            base = REPO / top
-            if not base.is_dir():
-                raise PodError(f"{base} is missing. Run this from a full copy of the repository.")
-            for root, dirs, files in os.walk(base):
-                dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS)
-                for name in sorted(files):
-                    path = Path(root) / name
-                    # Forward slashes in the archive, also on Windows.
-                    tar.add(str(path), arcname=path.relative_to(REPO).as_posix())
+        for relative in files_to_upload():
+            tar.add(str(REPO / relative), arcname=relative)  # forward slashes, also on Windows
     return buffer.getvalue()
 
 
@@ -402,7 +424,7 @@ def earlier_pod(api: RunPod, mine: str) -> dict | None:
     me = api.pod(mine) or {"id": mine, "createdAt": ""}
     key = lambda p: (str(p.get("createdAt") or ""), p["id"])  # noqa: E731
     others = [p for p in api.our_pods()
-              if p["id"] != mine and p.get("status") != "TERMINATED" and key(p) < key(me)]
+              if p["id"] != mine and p.get("status") not in GONE and key(p) < key(me)]
     return min(others, key=key) if others else None
 
 
@@ -445,8 +467,8 @@ def follow(remote: Remote) -> str:
     began = quiet_since = time.time()
     while True:
         try:
-            out = remote.run("cat /root/stage 2>/dev/null; echo; cat /root/session.log 2>/dev/null",
-                             timeout=60)
+            out = remote.run(f"cat /root/stage 2>/dev/null; echo; echo {LOG_START}; "
+                             "cat /root/session.log 2>/dev/null", timeout=60)
             misses = 0
         except PodError:
             misses += 1  # a slow answer now and then is fine
@@ -454,7 +476,7 @@ def follow(remote: Remote) -> str:
                 raise PodError("lost contact with the pod over SSH") from None
             time.sleep(10)
             continue
-        stage, _, log = out.partition("\n")
+        stage, _, log = out.partition(f"\n{LOG_START}\n")
         lines = log.splitlines()
         for line in lines[shown:]:
             say("  " + line)
@@ -510,7 +532,16 @@ def cmd_start(api: RunPod, args: argparse.Namespace) -> None:
             f'  macOS:   afconvert -f WAVE -d LEI16@24000 -c 1 "{voice}" voice.wav\n'
             f'  Windows: ffmpeg -i "{voice}" -ar 24000 -ac 1 voice.wav   (ffmpeg: winget install ffmpeg)\n'
             "Or record in Audacity and use File, Export, Export as WAV.")
-    existing = [p for p in api.our_pods() if p.get("status") not in ("TERMINATED",)]
+    pods = [p for p in api.our_pods() if p.get("status") != "TERMINATED"]
+    stopped = [p for p in pods if p.get("status") == "EXITED"]
+    existing = [p for p in pods if p.get("status") not in GONE]
+    for pod in stopped:
+        # A stopped pod has no GPU and no link, so it is no use to anyone, but
+        # its disk still bills. The pod stops itself this way if it could not
+        # delete itself.
+        say(f"Pod {pod['id']} ({pod.get('name')}) is stopped: it has no GPU, but its disk still bills.")
+        if args.yes or ask_yes("Terminate it?", True):
+            terminate(api, pod["id"])
     if existing and not args.another:
         say("A pod is already running for the team, so none was started:")
         for pod in existing:
@@ -523,14 +554,15 @@ def cmd_start(api: RunPod, args: argparse.Namespace) -> None:
     token = secrets.token_urlsafe(12)
     pod, env = create_pod(api, args, token, public_key)
     pod_id = pod["id"]
-    if not args.another:
-        first = earlier_pod(api, pod_id)
-        if first is not None:
-            say("A teammate started a pod at the same moment. Keeping theirs and removing this one.")
-            terminate(api, pod_id)
-            show_pod(api, first)
-            return
+    # From here until the setup starts, any failure offers to remove the pod.
     try:
+        if not args.another:
+            first = earlier_pod(api, pod_id)
+            if first is not None:
+                say("A teammate started a pod at the same moment. Keeping theirs and removing this one.")
+                terminate(api, pod_id)
+                show_pod(api, first)
+                return
         say("Waiting for the pod to boot. This usually takes 1 to 3 minutes.")
         pod = wait_running(api, pod_id)
         say("Connecting to the pod over SSH...")
@@ -574,8 +606,11 @@ def cmd_start(api: RunPod, args: argparse.Namespace) -> None:
         say("The setup failed; the reason is above.")
         if args.yes or ask_yes("Terminate the pod now so it stops billing?", True):
             terminate(api, pod_id)
-        else:
+        elif args.idle_minutes > 0:
             say(f"It shuts itself down in {args.idle_minutes} minutes.")
+        else:
+            say("It will not shut itself down (--idle-minutes 0), and it keeps billing.")
+            say("  python voice-pipeline/dev/pod.py stop     terminates it")
 
 
 # ---------------------------------------------------------------- status, logs, stop

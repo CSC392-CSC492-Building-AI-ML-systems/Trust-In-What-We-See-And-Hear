@@ -3,8 +3,10 @@
 AI-assisted code (written with Claude Code), cited per the CSC398 AI policy.
 """
 
+import hashlib
 import importlib.util
 import io
+import os
 import subprocess
 import tarfile
 import time
@@ -118,12 +120,71 @@ def test_drama_asks_for_an_80_gb_card_and_more_disk():
 
 
 def test_start_does_not_make_a_second_pod(capsys, monkeypatch, tmp_path):
-    api = FakeAPI(pods=[{"id": "old1", "name": "voice-pipeline-test-sam", "status": "EXITED"}])
-    monkeypatch.setattr(api, "pod", lambda pod_id: api.pods[0])
+    api = FakeAPI(pods=[{"id": "old1", "name": "voice-pipeline-test-sam", "status": "RUNNING"}])
+    monkeypatch.setattr(api, "pod", lambda pod_id: {**api.pods[0], "status": "STARTING"})
     (tmp_path / "v.wav").write_bytes(b"RIFF....WAVE")
     pod.cmd_start(api, start_args(voice=str(tmp_path / "v.wav")))
     assert api.created == []
     assert "already running" in capsys.readouterr().out
+
+
+class Stop(Exception):
+    pass
+
+
+def test_a_stopped_pod_is_removed_and_does_not_block_start(capsys, monkeypatch, tmp_path):
+    # A pod that could not delete itself stops itself: no GPU, no link, but
+    # its disk bills. It must not count as the team's running pod.
+    api = FakeAPI(pods=[{"id": "old1", "name": "voice-pipeline-test-sam", "status": "EXITED"}])
+    removed = []
+    monkeypatch.setattr(pod, "terminate", lambda api, pod_id: removed.append(pod_id))
+    monkeypatch.setattr(pod, "ssh_key", lambda: (_ for _ in ()).throw(Stop()))
+    (tmp_path / "v.wav").write_bytes(b"RIFF....WAVE")
+    with pytest.raises(Stop):  # got as far as making the SSH key for a new pod
+        pod.cmd_start(api, start_args(voice=str(tmp_path / "v.wav")))
+    assert removed == ["old1"]
+    assert "already running" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("failure", [pod.PodError("RunPod answered 502"), KeyboardInterrupt()])
+def test_a_failure_right_after_create_still_reports_the_pod(failure, capsys, monkeypatch, tmp_path):
+    api = FakeAPI()
+    removed = []
+    key = tmp_path / "key"
+    key.with_name("key.pub").write_text("ssh-ed25519 AAAA test")
+    monkeypatch.setattr(pod, "ssh_key", lambda: key)
+    monkeypatch.setattr(pod, "terminate", lambda api, pod_id: removed.append(pod_id))
+
+    def earlier_pod(api, mine):
+        raise failure
+    monkeypatch.setattr(pod, "earlier_pod", earlier_pod)
+    (tmp_path / "v.wav").write_bytes(b"RIFF....WAVE")
+    try:
+        pod.cmd_start(api, start_args(voice=str(tmp_path / "v.wav")))
+    except pod.PodError:
+        pass
+    out = capsys.readouterr().out
+    assert "pod123" in out  # the user is told the new pod exists
+    if isinstance(failure, pod.PodError):
+        assert removed == ["pod123"]  # and, with --yes, it is removed
+
+
+def test_the_failed_setup_message_is_right_without_an_idle_limit(capsys, monkeypatch, tmp_path):
+    api = FakeAPI()
+    key = tmp_path / "key"
+    key.with_name("key.pub").write_text("ssh-ed25519 AAAA test")
+    monkeypatch.setattr(pod, "ssh_key", lambda: key)
+    monkeypatch.setattr(pod, "earlier_pod", lambda api, mine: None)
+    monkeypatch.setattr(pod, "wait_running", lambda api, pod_id: {"id": pod_id})
+    monkeypatch.setattr(pod, "connect", lambda api, pod_id, key: FakeShell())
+    monkeypatch.setattr(pod, "make_archive", lambda: b"code")
+    monkeypatch.setattr(pod, "follow", lambda remote: "failed")
+    # Yes to starting, no to terminating after the failure.
+    monkeypatch.setattr(pod, "ask_yes", lambda question, default=False: question.startswith("Start"))
+    (tmp_path / "v.wav").write_bytes(b"RIFF....WAVE")
+    pod.cmd_start(api, start_args(voice=str(tmp_path / "v.wav"), yes=False, idle_minutes=0))
+    out = capsys.readouterr().out
+    assert "down in 0 minutes" not in out and "will not shut itself down" in out
 
 
 def test_the_archive_has_the_code_and_no_environments():
@@ -134,18 +195,67 @@ def test_the_archive_has_the_code_and_no_environments():
     assert not [n for n in names if "__pycache__" in n or ".venv" in n or "\\" in n]
 
 
-def test_upload_arrives_whole(tmp_path):
+@pytest.mark.parametrize("name, kept", [
+    ("backend/app/main.py", True),
+    ("backend/app/.env", False),
+    ("backend/app/.env.local", False),
+    ("voice-pipeline/me.wav", False),
+    ("voice-pipeline/notes/Recording.M4A", False),
+])
+def test_secrets_and_recordings_are_never_uploaded(name, kept):
+    assert pod.never_upload(name) is not kept
+
+
+def test_untracked_secrets_in_the_folders_are_left_out(monkeypatch, tmp_path):
+    for name in ("voice-pipeline/a.py", "voice-pipeline/.env", "voice-pipeline/take.wav",
+                 "backend/app/b.py"):
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).write_text("x")
+    monkeypatch.setattr(pod, "REPO", tmp_path)  # not a git repository: the walk is used
+    assert pod.files_to_upload() == ["backend/app/b.py", "voice-pipeline/a.py"]
+
+
+class FakeShell(pod.Remote):
+    """The two commands upload() runs on the pod, without a real shell."""
+
+    def __init__(self, lossy=False):
+        self.files = {}
+        self.lossy = lossy
+
+    def run(self, script, data=None, timeout=120):
+        if script.startswith("cat > "):
+            self.files[script[6:]] = data[:-1] if self.lossy else data
+            return ""
+        if script.startswith("sha256sum "):
+            name = script[10:]
+            return f"{hashlib.sha256(self.files[name]).hexdigest()}  {name}\n"
+        return ""  # mkdir, tar, the launch
+
+
+def test_upload_arrives_whole():
+    remote = FakeShell()
     data = bytes(range(256)) * 2000
-    pod.upload(LocalRemote(tmp_path), data, "/root/thing.bin")
-    assert (tmp_path / "thing.bin").read_bytes() == data
+    pod.upload(remote, data, "/root/thing.bin")
+    assert remote.files["/root/thing.bin"] == data
 
 
-def test_a_damaged_upload_is_caught(tmp_path):
-    class Lossy(LocalRemote):
-        def run(self, script, data=None, timeout=120):
-            return super().run(script, data[:-1] if data else data, timeout)
+def test_a_damaged_upload_is_caught():
     with pytest.raises(pod.PodError, match="damaged"):
-        pod.upload(Lossy(tmp_path), b"0123456789", "/root/thing.bin")
+        pod.upload(FakeShell(lossy=True), b"0123456789", "/root/thing.bin")
+
+
+def test_progress_is_shown_once_per_line(capsys):
+    # The first read has no stage yet, the next ones do: no line may repeat.
+    class Pod:
+        reads = [("", ["a"]), ("setup", ["a", "b"]), ("ready", ["a", "b", "c"])]
+
+        def run(self, script, data=None, timeout=120):
+            stage, lines = self.reads.pop(0)
+            return f"{stage}\n{pod.LOG_START}\n" + "".join(f"{l}\n" for l in lines)
+    import unittest.mock
+    with unittest.mock.patch.object(pod.time, "sleep", lambda s: None):
+        assert pod.follow(Pod()) == "ready"
+    assert capsys.readouterr().out.split() == ["a", "b", "c"]
 
 
 def test_progress_lines_are_read_from_the_container_log(monkeypatch):
@@ -196,6 +306,7 @@ def test_ssh_uses_only_the_scripts_own_key_and_skips_host_prompts(monkeypatch, t
     assert command[-4:] == ["root@1.2.3.4", "-p", "40022", "echo hello"]
 
 
+@pytest.mark.skipif(os.name == "nt", reason="needs a POSIX shell with setsid, like the pod's")
 def test_the_launch_returns_at_once_while_the_setup_keeps_running(tmp_path, monkeypatch):
     # Captured output works like SSH: the call ends only when nothing holds
     # the connection's output open. A setup that keeps running must not.

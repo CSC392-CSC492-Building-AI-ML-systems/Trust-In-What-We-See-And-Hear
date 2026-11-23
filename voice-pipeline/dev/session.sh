@@ -32,7 +32,7 @@ stage() { echo "$1" > /root/stage; }
 size_gb() { du -sm "$@" 2>/dev/null | awk '{s+=$1} END {printf "%.1f", s/1024}'; }
 
 # The pod's own ID and API key (RunPod sets both in every pod). A command
-# started through the API may not inherit them, so read them from PID 1.
+# started over SSH does not inherit them, so read them from PID 1.
 from_pid1() { tr '\0' '\n' < /proc/1/environ 2>/dev/null | sed -n "s/^$1=//p" | head -1; }
 POD_ID=${RUNPOD_POD_ID:-$(from_pid1 RUNPOD_POD_ID)}
 POD_KEY=${RUNPOD_API_KEY:-$(from_pid1 RUNPOD_API_KEY)}
@@ -70,12 +70,18 @@ watch_idle() {
   done
 }
 
+# The reason goes to the log before the stage says failed: pod.py stops
+# reading as soon as it sees the stage.
 fail() {
-  stage failed
   say "FAILED: $1"
   say "The last lines of $2:"
   tail -n 25 "$2" | while IFS= read -r l; do say "    $l"; done
-  say "The pod shuts itself down in $IDLE_MINUTES minutes. To stop it now: python voice-pipeline/dev/pod.py stop"
+  if [ "$IDLE_MINUTES" -gt 0 ]; then
+    say "The pod shuts itself down in $IDLE_MINUTES minutes. To stop it now: python voice-pipeline/dev/pod.py stop"
+  else
+    say "The pod does not shut itself down (IDLE_MINUTES=0). Stop it with: python voice-pipeline/dev/pod.py stop"
+  fi
+  stage failed
   wait
   exit 1
 }

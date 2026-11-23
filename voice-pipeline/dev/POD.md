@@ -13,7 +13,7 @@ run `stop` when you are done.
 1. Get your API key from me (Uyiosa). Keep it private.
 2. Install Python 3.9 or newer (`py --version` on Windows, `python3 --version`
    on macOS).
-3. Clone the repo and run `git checkout voice-pipeline-dev-tools`.
+3. Clone the repo.
 4. Record a WAV file of your voice, at least 5 seconds long. The caller
    clones it.
 

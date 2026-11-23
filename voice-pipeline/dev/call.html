@@ -65,7 +65,7 @@ deleted from the server when the call ends.</small></p>
 
 <script>
 const $ = id => document.getElementById(id);
-let ws = null, actx = null, mic = null, callId = null, token = 'dev', httpBase = '';
+let ws = null, actx = null, mic = null, callId = null, token = 'dev';
 let playHead = 0;                  // AudioContext time when queued audio ends
 let chain = Promise.resolve();     // handles server messages strictly in order
 
@@ -104,7 +104,8 @@ $('recstop').onclick = () => {
   rec = null;
   clearInterval(timer); source.disconnect(); stream.getTracks().forEach(t => t.stop());
   const seconds = (Date.now() - started) / 1000;
-  $('rec').disabled = false; $('recstop').disabled = true; $('call').disabled = false;
+  // Call stays off while a call is going on.
+  $('rec').disabled = false; $('recstop').disabled = true; $('call').disabled = ws !== null;
   if (seconds < 6) {
     ctx.close();
     $('recstate').textContent = 'Too short: record at least 6 seconds.';
@@ -130,13 +131,13 @@ function toWav(chunks, rate) {
 }
 
 $('call').onclick = async () => {
-  // ?server=wss://host&token=... points the page at another server (the pod).
+  // The page is served by the call server itself (the pod), so it talks to
+  // the server it came from.
   const q = new URLSearchParams(location.search);
   const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
-  const server = q.get('server') || `${scheme}://${location.host}`;
+  const server = `${scheme}://${location.host}`;
   callId = `test-${Date.now()}`;
   token = q.get('token') || 'dev';
-  httpBase = server.replace(/^ws/, 'http');
   $('call').disabled = true;
   if (voiceWav) {
     setState('Uploading your voice...');
@@ -147,7 +148,12 @@ $('call').onclick = async () => {
   $('talk').replaceChildren();
   $('result').textContent = 'The result appears after the call ends.';
   ws = new WebSocket(`${server}/ws/calls/${callId}?token=${encodeURIComponent(token)}`);
-  ws.onmessage = e => { chain = chain.then(() => handle(JSON.parse(e.data))); };
+  // A message that fails is logged and skipped, so the ones after it
+  // (call_ended above all) are still handled.
+  ws.onmessage = e => {
+    chain = chain.then(() => handle(JSON.parse(e.data)))
+                 .catch(err => log('note', `could not handle a message: ${err}`));
+  };
   ws.onclose = e => { log('note', `socket closed (code ${e.code})`); reset(); };
   $('call').disabled = true;
   setState('Connecting...');
@@ -178,7 +184,7 @@ async function handle(m) {
     setState('Caller speaking');
   } else if (m.type === 'turn_done') {
     // Tell the server once this turn's audio has finished playing.
-    const wait = Math.max(0, playHead - actx.currentTime) * 1000;
+    const wait = actx ? Math.max(0, playHead - actx.currentTime) * 1000 : 0;
     setTimeout(() => {
       if (ws && ws.readyState === 1) { send({type: 'played', turn_id: m.turn_id}); setState('Listening... just talk'); }
     }, wait);
@@ -203,12 +209,7 @@ async function pollResult(id) {
   const started = Date.now();
   $('result').textContent = 'Scoring the call...';
   for (;;) {
-    // Another server (the pod) is read through this page's own server: a
-    // browser may not read another site's answer directly.
-    const remote = new URLSearchParams(location.search).get('server');
-    const r = await fetch(remote
-      ? `/remote/${id}?token=${encodeURIComponent(token)}&base=${encodeURIComponent(httpBase)}`
-      : `/api/v1/calls/${id}?token=${encodeURIComponent(token)}`);
+    const r = await fetch(`/api/v1/calls/${id}?token=${encodeURIComponent(token)}`);
     if (!r.ok) { $('result').textContent = `No result (HTTP ${r.status}).`; return; }
     const call = await r.json();
     if (call.status === 'failed') { $('result').textContent = 'The call could not be scored (failed).'; return; }
@@ -241,6 +242,7 @@ function showResult(s, waited) {
 
 // Each audio message is one WAV file; queue them back to back.
 async function play(b64) {
+  if (!actx) return;  // the call has already ended
   const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
   const buffer = await actx.decodeAudioData(bytes.buffer);
   const source = actx.createBufferSource();
