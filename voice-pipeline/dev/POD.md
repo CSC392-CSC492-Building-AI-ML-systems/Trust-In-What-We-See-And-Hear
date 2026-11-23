@@ -57,6 +57,51 @@ page, or else the `--voice` file of whoever started the pod.
 | `--gpu L40S` | Only rent this GPU type (default: the cheapest that fits) |
 | `--community` | Also try RunPod's cheaper, less reliable community cloud |
 | `--idle-minutes 60` | Minutes without a call before it stops itself (default 30) |
+| `--backend https://...` | Take calls from a backend instead of the test page (see below) |
+
+## With the backend
+
+`start --backend` runs the pod the way the app will use it: the backend
+hands out calls, the pod claims them, downloads the persona's voice from
+Supabase Storage and reports the score back. There is no test page and no
+`--voice`. Calls start from the app, or from `backend_call.py` below.
+
+The pod is on RunPod's network, so it can't reach `localhost`. For a
+backend on your computer, `tunnels.py` gives it two public addresses
+through Cloudflare quick tunnels (free, no account; install `cloudflared`
+with `brew install cloudflared` or `winget install Cloudflare.cloudflared`).
+One goes to the backend. The other serves only the signed voice links from
+the local Supabase, not the rest of its API.
+
+1. Start the local Supabase and the backend (see the root README).
+2. In a second window, leave this running:
+   `python3 voice-pipeline/dev/tunnels.py`
+   With the hosted Supabase, add `--no-supabase`.
+3. `python3 voice-pipeline/dev/pod.py start --backend <backend address it printed>`
+4. When the pod is ready, restart the backend with the three settings the
+   two scripts printed:
+
+   | Setting | Value |
+   |---|---|
+   | `PIPELINE_WS_URL` | `wss://<pod id>-8001.proxy.runpod.net` |
+   | `PIPELINE_BACKEND_SECRET` | the contents of `~/.tiwwsah/pipeline-backend-secret.txt`, which `pod.py` makes the first time |
+   | `PIPELINE_SUPABASE_URL` | the voice-link address from `tunnels.py` (leave it out with `--no-supabase`) |
+
+5. Make a call. Until the app can, from `backend/`:
+
+   ```bash
+   say -o r1.wav --data-format=LEI16@16000 "Hello? Who is this?"
+   uv run python ../voice-pipeline/dev/backend_call.py \
+       --email alice@example.com --password demo-password r1.wav
+   ```
+
+   It starts a call, plays each WAV as your side of the conversation,
+   hangs up and prints the score the backend stored. The persona needs a
+   voice uploaded through `PUT /api/v1/users/me/voice` (the local demo
+   accounts have none), and each call uses up one consent.
+
+The tunnel addresses change every time `tunnels.py` starts, and a pod keeps
+the backend address it was started with, so restart both together.
 
 ## Frontend testing
 
