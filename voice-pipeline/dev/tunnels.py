@@ -28,6 +28,7 @@ import argparse
 import http.server
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -147,6 +148,10 @@ def main() -> None:
                         help="no Supabase tunnel: the backend uses the hosted Supabase")
     args = parser.parse_args()
 
+    # Closing the window or `kill` should close the tunnels too, like Ctrl+C.
+    for name in ("SIGTERM", "SIGHUP"):
+        if hasattr(signal, name):
+            signal.signal(getattr(signal, name), signal.default_int_handler)
     cloudflared = shutil.which("cloudflared")
     if not cloudflared:
         sys.exit("cloudflared is not installed. macOS: brew install cloudflared; "
