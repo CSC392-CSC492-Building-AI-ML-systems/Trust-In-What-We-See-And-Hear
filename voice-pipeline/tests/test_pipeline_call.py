@@ -830,3 +830,48 @@ def test_health_reports_idle_time_and_none_during_a_call(rig, monkeypatch):
             ws.receive_json()
     clock[0] += 10
     assert client.get("/health").json()["idle_seconds"] == 40
+
+
+# Recordings uploaded from the test page (DevCalls.set_voice).
+WAV = b"RIFF\0\0\0\0WAVEfmt "
+
+
+def dev_calls(tmp_path, context=None):
+    context_path = tmp_path / "context.json"
+    context_path.write_text(json.dumps(context or {"persona": {}}))
+    calls = DevCalls("tok", "default.wav", context_path)
+    calls.voice_dir = tmp_path / "voices"
+    return calls
+
+
+def test_an_uploaded_voice_is_used_for_its_call_and_deleted_when_it_ends(tmp_path):
+    calls = dev_calls(tmp_path)
+    calls.set_voice("c1", WAV)
+    path = calls.call_voices["c1"]
+    setup = asyncio.run(calls.claim("c1", "tok"))
+    assert setup.voice == str(path) and path.exists()
+    asyncio.run(calls.report("c1", session_module.CallReport("hangup", 3, None)))
+    assert not path.exists()
+
+
+def test_a_voice_whose_call_never_starts_is_deleted_later(tmp_path, monkeypatch):
+    calls = dev_calls(tmp_path)
+    calls.set_voice("never", WAV)
+    calls.set_voice("started", WAV)
+    never, started = calls.call_voices["never"], calls.call_voices["started"]
+    asyncio.run(calls.claim("started", "tok"))
+    now = time.monotonic()
+    monkeypatch.setattr("pipeline.calls.time.monotonic", lambda: now + calls.VOICE_UNCLAIMED_SECONDS + 1)
+    calls.set_voice("next", WAV)  # any upload or claim clears out old ones
+    assert not never.exists()
+    assert started.exists()  # its call is going on: its report deletes it
+
+
+def test_a_voice_is_deleted_when_its_call_cannot_be_set_up(tmp_path):
+    calls = dev_calls(tmp_path)
+    calls.set_voice("c1", WAV)
+    path = calls.call_voices["c1"]
+    calls.context_path = tmp_path / "missing.json"
+    with pytest.raises(CallsUnavailable):
+        asyncio.run(calls.claim("c1", "tok"))
+    assert not path.exists()

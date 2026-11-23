@@ -16,7 +16,9 @@ PIPELINE_BACKEND_URL is set.
     PIPELINE_BACKEND_SECRET   shared secret the backend expects from us
 
 DevCalls needs no backend: one shared token, one context file and one voice
-recording.
+recording. The test page can upload a recording for a call (set_voice); that
+call then uses it, and the file is deleted when the call ends. A recording
+whose call never starts is deleted after VOICE_UNCLAIMED_SECONDS.
 
     PIPELINE_DEV_TOKEN     required; without it every connection is refused
     PIPELINE_DEV_VOICE     path to a WAV of the voice to clone (required)
@@ -35,6 +37,7 @@ import json
 import logging
 import os
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote
@@ -69,6 +72,7 @@ class CallReport:
 
 class DevCalls:
     KEPT_REPORTS = 50
+    VOICE_UNCLAIMED_SECONDS = 600  # a test-page recording whose call never started
     report_budget_seconds = 0.0  # the longest report() can take: it only stores
 
     def __init__(self, token: str, voice: str, context_path: str | Path = SAMPLE_CONTEXT,
@@ -80,6 +84,11 @@ class DevCalls:
         # call ID -> its report, or None while the call is going on. In memory
         # only, for looking at results without a backend (see session.py).
         self.reports: dict[str, CallReport | None] = {}
+        # call ID -> a recording uploaded from the test page for that call,
+        # and when it came (None once its call has started: report drops it).
+        self.call_voices: dict[str, Path] = {}
+        self.voice_uploaded: dict[str, float | None] = {}
+        self.voice_dir = Path(tempfile.gettempdir()) / "dev-voices"
 
     def accepts(self, token: str) -> bool:
         return bool(self.token) and hmac.compare_digest(token.encode(), self.token.encode())
@@ -92,6 +101,35 @@ class DevCalls:
 
     async def report(self, call_id: str, report: CallReport) -> None:
         self._keep(call_id, report)
+        self._drop_voice(call_id)
+
+    def set_voice(self, call_id: str, wav: bytes) -> None:
+        """Use this recording for the call with this ID (from the test page)."""
+        if len(wav) > MAX_VOICE_BYTES or wav[:4] != b"RIFF" or wav[8:12] != b"WAVE":
+            raise ValueError("not a WAV file, or too large")
+        self.voice_dir.mkdir(parents=True, exist_ok=True)
+        path = self.voice_dir / f"{os.urandom(8).hex()}.wav"
+        path.write_bytes(wav)
+        self._drop_voice(call_id)
+        self._drop_unclaimed_voices()
+        self.call_voices[call_id] = path
+        self.voice_uploaded[call_id] = time.monotonic()
+        while len(self.call_voices) > self.KEPT_REPORTS:
+            self._drop_voice(next(iter(self.call_voices)))
+
+    def _drop_voice(self, call_id: str) -> None:
+        self.voice_uploaded.pop(call_id, None)
+        path = self.call_voices.pop(call_id, None)
+        if path:
+            path.unlink(missing_ok=True)
+
+    def _drop_unclaimed_voices(self) -> None:
+        """Delete recordings whose call never started (the socket never
+        connected, the tab was closed, or the line was busy)."""
+        cutoff = time.monotonic() - self.VOICE_UNCLAIMED_SECONDS
+        for call_id, uploaded in list(self.voice_uploaded.items()):
+            if uploaded is not None and uploaded < cutoff:
+                self._drop_voice(call_id)
 
     @classmethod
     def from_env(cls) -> DevCalls:
@@ -102,15 +140,20 @@ class DevCalls:
 
     async def claim(self, call_id: str, token: str) -> CallSetup | None:
         """The setup for this call, or None if the token is not accepted."""
+        self._drop_unclaimed_voices()
         if not self.accepts(token):
             return None
         try:
             context = json.loads(self.context_path.read_text())
         except (OSError, ValueError) as e:
             # Before the call is marked as going on, so it is not left that way.
+            self._drop_voice(call_id)  # this call gets no report to drop it
             raise CallsUnavailable("the dev context file could not be read") from e
         self._keep(call_id, None)
-        return CallSetup(context, self.voice, self.max_duration_seconds)
+        voice = self.call_voices.get(call_id)
+        if voice:
+            self.voice_uploaded[call_id] = None  # its call's report drops it
+        return CallSetup(context, str(voice) if voice else self.voice, self.max_duration_seconds)
 
 
 class CallsUnavailable(Exception):

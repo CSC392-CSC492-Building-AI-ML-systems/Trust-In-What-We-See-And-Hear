@@ -113,3 +113,19 @@ if os.environ.get("PIPELINE_TEST_PAGE"):
     @app.get("/", include_in_schema=False)
     def test_page() -> FileResponse:
         return FileResponse(os.environ["PIPELINE_TEST_PAGE"])
+
+    if isinstance(calls, DevCalls):
+        from fastapi import HTTPException, Request
+
+        @app.post("/dev/voice/{call_id}", include_in_schema=False)
+        async def upload_voice(call_id: str, request: Request, token: str = "") -> dict:
+            """A voice recorded on the test page, for the call with this ID."""
+            if not calls.accepts(token):
+                raise HTTPException(401, "wrong token")
+            if len(call_id) > 100:
+                raise HTTPException(400, "call ID too long")
+            try:
+                calls.set_voice(call_id, await request.body())
+            except ValueError as e:
+                raise HTTPException(400, str(e)) from None
+            return {"ok": True}

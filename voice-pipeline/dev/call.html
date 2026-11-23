@@ -1,0 +1,309 @@
+<!doctype html>
+<!--
+  Test page for the call server, served at / when PIPELINE_TEST_PAGE is set
+  (dev/pod.py does). Open it as /?token=... . Shows the conversation
+  and, after the call, the result the pipeline scored.
+  AI-assisted code (written with Claude Code), cited per the CSC398 AI policy.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Call test</title>
+<style>
+  body { font: 15px/1.5 system-ui, sans-serif; max-width: 720px; margin: 24px auto; padding: 0 16px; }
+  button { font: inherit; padding: 8px 16px; margin-right: 8px; }
+  #state { font-weight: 600; margin: 16px 0 8px; }
+  #meter { height: 10px; background: #8884; border-radius: 5px; overflow: hidden; }
+  #level { height: 100%; width: 0; background: #2a7; }
+  #log { margin-top: 16px; padding: 0; list-style: none; font: 13px/1.6 ui-monospace, monospace; }
+  #log li { border-bottom: 1px solid #8883; padding: 2px 0; white-space: pre-wrap; }
+  .out { color: #27c; } .in { color: inherit; } .note { opacity: 0.6; }
+  small { opacity: 0.7; }
+  h2 { font-size: 17px; margin: 24px 0 4px; }
+  #talk { padding: 0; list-style: none; }
+  #talk li { padding: 3px 0; }
+  #talk .you { color: #27c; }
+  #result dl { display: grid; grid-template-columns: 180px 1fr; gap: 4px 12px; margin: 0; }
+  #result dt { opacity: 0.7; } #result dd { margin: 0; }
+</style>
+</head>
+<body>
+<h1>Call test</h1>
+<p><small>Follows PROTOCOL.md. Use headphones, or the caller can hear itself.</small></p>
+
+<h2>1. Record your voice (optional)</h2>
+<p><small>The caller will speak in this voice. Record 10 to 20 seconds of normal
+speech, for example: "Hi, it's me. I'm just walking home from work and thought
+I'd call. Anyway, how has your week been? Mine has been busy but good."
+Without a recording the caller uses the pod's default voice. The recording is
+deleted from the server when the call ends.</small></p>
+<button id="rec">Record</button>
+<button id="recstop" disabled>Stop</button>
+<span id="recstate">No recording: the default voice is used.</span>
+<div><audio id="recplay" controls hidden></audio></div>
+
+<h2>2. Call</h2>
+<button id="call">Call</button>
+<button id="answer" disabled>Answer</button>
+<button id="hangup" disabled>Hang up</button>
+
+<div id="state">Not connected</div>
+<div id="meter" title="Microphone level"><div id="level"></div></div>
+<small>Microphone level.</small>
+
+<h2>Conversation</h2>
+<p><small>Shown here only. The server keeps it in memory until the call is scored.</small></p>
+<ul id="talk"></ul>
+
+<h2>Result</h2>
+<div id="result" class="note">No call yet.</div>
+
+<h2>Messages</h2>
+
+<ul id="log"></ul>
+
+<script>
+const $ = id => document.getElementById(id);
+let ws = null, actx = null, mic = null, callId = null, token = 'dev';
+let playHead = 0;                  // AudioContext time when queued audio ends
+let chain = Promise.resolve();     // handles server messages strictly in order
+
+function log(cls, text) {
+  const li = document.createElement('li');
+  li.className = cls; li.textContent = text;
+  $('log').prepend(li);
+}
+function setState(text) { $('state').textContent = text; }
+function send(msg) { ws.send(JSON.stringify(msg)); log('out', '-> ' + JSON.stringify(msg)); }
+
+// Recording a voice to clone: raw microphone samples, saved as a WAV file.
+let voiceWav = null, rec = null;
+$('rec').onclick = async () => {
+  const stream = await navigator.mediaDevices.getUserMedia(
+    {audio: {echoCancellation: false, noiseSuppression: true, autoGainControl: true}});
+  const ctx = new AudioContext();
+  await ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([WORKLET], {type: 'text/javascript'})));
+  const source = ctx.createMediaStreamSource(stream);
+  const node = new AudioWorkletNode(ctx, 'tap');
+  const chunks = [];
+  node.port.onmessage = e => { chunks.push(e.data); };
+  source.connect(node);
+  const started = Date.now();
+  const timer = setInterval(() => {
+    const t = (Date.now() - started) / 1000;
+    $('recstate').textContent = `Recording... ${t.toFixed(0)} s` + (t < 8 ? ' (keep going)' : '');
+    if (t >= 30) $('recstop').onclick();
+  }, 250);
+  rec = {stream, ctx, source, chunks, timer, started};
+  $('rec').disabled = true; $('recstop').disabled = false; $('call').disabled = true;
+};
+$('recstop').onclick = () => {
+  if (!rec) return;
+  const {stream, ctx, source, chunks, timer, started} = rec;
+  rec = null;
+  clearInterval(timer); source.disconnect(); stream.getTracks().forEach(t => t.stop());
+  const seconds = (Date.now() - started) / 1000;
+  // Call stays off while a call is going on.
+  $('rec').disabled = false; $('recstop').disabled = true; $('call').disabled = ws !== null;
+  if (seconds < 6) {
+    ctx.close();
+    $('recstate').textContent = 'Too short: record at least 6 seconds.';
+    return;
+  }
+  voiceWav = toWav(chunks, ctx.sampleRate);
+  ctx.close();
+  $('recplay').src = URL.createObjectURL(voiceWav); $('recplay').hidden = false;
+  $('recstate').textContent = `Recorded ${seconds.toFixed(0)} s. Your calls use this voice. Record again to replace it.`;
+};
+
+function toWav(chunks, rate) {
+  const n = chunks.reduce((a, c) => a + c.length, 0);
+  const buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
+  const text = (o, t) => { for (let i = 0; i < t.length; i++) v.setUint8(o + i, t.charCodeAt(i)); };
+  text(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); text(8, 'WAVE');
+  text(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  text(36, 'data'); v.setUint32(40, n * 2, true);
+  let o = 44;
+  for (const c of chunks) for (const x of c) { v.setInt16(o, Math.max(-1, Math.min(1, x)) * 32767, true); o += 2; }
+  return new Blob([buf], {type: 'audio/wav'});
+}
+
+$('call').onclick = async () => {
+  // The page is served by the call server itself (the pod), so it talks to
+  // the server it came from.
+  const q = new URLSearchParams(location.search);
+  const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
+  const server = `${scheme}://${location.host}`;
+  callId = `test-${Date.now()}`;
+  token = q.get('token') || 'dev';
+  $('call').disabled = true;
+  if (voiceWav) {
+    setState('Uploading your voice...');
+    const r = await fetch(`/dev/voice/${callId}?token=${encodeURIComponent(token)}`,
+                          {method: 'POST', headers: {'Content-Type': 'audio/wav'}, body: voiceWav});
+    if (!r.ok) { setState(`Could not upload your voice (HTTP ${r.status}).`); $('call').disabled = false; return; }
+  }
+  $('talk').replaceChildren();
+  $('result').textContent = 'The result appears after the call ends.';
+  ws = new WebSocket(`${server}/ws/calls/${callId}?token=${encodeURIComponent(token)}`);
+  // A message that fails is logged and skipped, so the ones after it
+  // (call_ended above all) are still handled.
+  ws.onmessage = e => {
+    chain = chain.then(() => handle(JSON.parse(e.data)))
+                 .catch(err => log('note', `could not handle a message: ${err}`));
+  };
+  ws.onclose = e => { log('note', `socket closed (code ${e.code})`); reset(); };
+  $('call').disabled = true;
+  setState('Connecting...');
+};
+
+$('answer').onclick = async () => {
+  $('answer').disabled = true;
+  actx = new AudioContext();
+  await startMic();
+  send({type: 'answered'});
+  $('hangup').disabled = false;
+  setState('In call');
+};
+
+$('hangup').onclick = () => send({type: 'hangup'});
+
+async function handle(m) {
+  // Log everything except the base64 audio itself.
+  log('in', '<- ' + JSON.stringify({...m, audio: m.audio ? `<${m.audio.length} base64 chars>` : undefined}));
+  if (m.type === 'ready') {
+    $('answer').disabled = false;
+    setState('Incoming call... press Answer');
+  } else if (m.type === 'transcript') {
+    say('you', 'You: ' + (m.text || '(not understood)'));
+  } else if (m.type === 'audio') {
+    if (m.text) say('caller', 'Caller: ' + m.text);
+    await play(m.audio);
+    setState('Caller speaking');
+  } else if (m.type === 'turn_done') {
+    // Tell the server once this turn's audio has finished playing.
+    const wait = actx ? Math.max(0, playHead - actx.currentTime) * 1000 : 0;
+    setTimeout(() => {
+      if (ws && ws.readyState === 1) { send({type: 'played', turn_id: m.turn_id}); setState('Listening... just talk'); }
+    }, wait);
+  } else if (m.type === 'speech_end') {
+    setState('Caller is answering...');
+  } else if (m.type === 'error' && m.code === 'setup_failed') {
+    setState('The call could not start. If you recorded a voice, try a longer, clearer recording.');
+  } else if (m.type === 'call_ended') {
+    setState(`Call ended (${m.reason}). This was a simulation.`);
+    pollResult(callId);
+  }
+}
+
+function say(cls, text) {
+  const li = document.createElement('li');
+  li.className = cls; li.textContent = text;
+  $('talk').append(li);
+}
+
+// After the call: ask for the result until it is ready, as the app will.
+async function pollResult(id) {
+  const started = Date.now();
+  $('result').textContent = 'Scoring the call...';
+  for (;;) {
+    const r = await fetch(`/api/v1/calls/${id}?token=${encodeURIComponent(token)}`);
+    if (!r.ok) { $('result').textContent = `No result (HTTP ${r.status}).`; return; }
+    const call = await r.json();
+    if (call.status === 'failed') { $('result').textContent = 'The call could not be scored (failed).'; return; }
+    if (call.status === 'completed') { showResult(call.summary, (Date.now() - started) / 1000); return; }
+    await new Promise(done => setTimeout(done, 1000));
+  }
+}
+
+function showResult(s, waited) {
+  const rows = [
+    ['Outcome', s.outcome],
+    ['Score', s.outcome === 'inconclusive' ? '(not shown for inconclusive)' : `${s.score} / 100`],
+    ['Summary', s.summary],
+    ['Did well', s.did_well.join(' | ') || '(none)'],
+    ['To improve', s.to_improve.join(' | ') || '(none)'],
+    ['Red flags noticed', s.red_flags_noticed.join(', ') || '(none)'],
+    ['Red flags missed', s.red_flags_missed.join(', ') || '(none)'],
+    ['Shared sensitive info', s.sensitive_info_shared ? 'yes' : 'no'],
+    ['Call length', `${s.duration_seconds} s`],
+    ['Scoring took', `about ${waited.toFixed(0)} s`],
+  ];
+  const dl = document.createElement('dl');
+  for (const [k, v] of rows) {
+    const dt = document.createElement('dt'), dd = document.createElement('dd');
+    dt.textContent = k; dd.textContent = v; dl.append(dt, dd);
+  }
+  $('result').className = '';
+  $('result').replaceChildren(dl);
+}
+
+// Each audio message is one WAV file; queue them back to back.
+async function play(b64) {
+  if (!actx) return;  // the call has already ended
+  const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+  const buffer = await actx.decodeAudioData(bytes.buffer);
+  const source = actx.createBufferSource();
+  source.buffer = buffer;
+  source.connect(actx.destination);
+  const start = Math.max(actx.currentTime + 0.02, playHead);
+  source.start(start);
+  playHead = start + buffer.duration;
+}
+
+// Microphone -> 16 kHz mono PCM16 -> binary frames of about 40 ms.
+const WORKLET = `class Tap extends AudioWorkletProcessor {
+  process(inputs) { const ch = inputs[0][0]; if (ch) this.port.postMessage(ch.slice(0)); return true; }
+}
+registerProcessor('tap', Tap);`;
+
+async function startMic() {
+  const stream = await navigator.mediaDevices.getUserMedia(
+    {audio: {echoCancellation: true, noiseSuppression: true, autoGainControl: true}});
+  await actx.audioWorklet.addModule(URL.createObjectURL(new Blob([WORKLET], {type: 'text/javascript'})));
+  const source = actx.createMediaStreamSource(stream);
+  const node = new AudioWorkletNode(actx, 'tap');
+  const ratio = actx.sampleRate / 16000;   // the browser records at 44.1 or 48 kHz
+  let carry = new Float32Array(0), pending = [], queued = 0;
+  node.port.onmessage = e => {
+    // Downsample by averaging each block of `ratio` input samples.
+    const x = new Float32Array(carry.length + e.data.length);
+    x.set(carry); x.set(e.data, carry.length);
+    const n = Math.floor(x.length / ratio), out = new Int16Array(n);
+    let peak = 0;
+    for (let i = 0; i < n; i++) {
+      const s0 = Math.floor(i * ratio), s1 = Math.floor((i + 1) * ratio);
+      let sum = 0;
+      for (let j = s0; j < s1; j++) sum += x[j];
+      const v = Math.max(-1, Math.min(1, sum / (s1 - s0)));
+      out[i] = v * 32767;
+      peak = Math.max(peak, Math.abs(v));
+    }
+    carry = x.slice(Math.floor(n * ratio));
+    $('level').style.width = Math.min(100, peak * 300) + '%';
+    pending.push(out); queued += out.length;
+    if (queued >= 640) {
+      const frame = new Int16Array(queued);
+      let offset = 0;
+      for (const p of pending) { frame.set(p, offset); offset += p.length; }
+      pending = []; queued = 0;
+      // Sent all the time; the server ignores it while the caller speaks.
+      if (ws && ws.readyState === 1) ws.send(frame.buffer);
+    }
+  };
+  source.connect(node);   // not connected to the speakers
+  mic = {stream, source, node};
+}
+
+function reset() {
+  if (mic) { mic.source.disconnect(); mic.stream.getTracks().forEach(t => t.stop()); mic = null; }
+  if (actx) { actx.close(); actx = null; }
+  playHead = 0; ws = null;
+  $('level').style.width = 0;
+  $('call').disabled = false; $('answer').disabled = true; $('hangup').disabled = true;
+}
+</script>
+</body>
+</html>

@@ -77,7 +77,9 @@ Things it guarantees:
 - Any email, website or phone number the caller says is rewritten to a fake
   one (`@example.com`, `555-01xx`).
 
-To run it on a fresh GPU pod (the scripts say which image and ports):
+For test calls on a rented GPU, `dev/` has a development tool that sets
+everything up with one command (guide: [dev/POD.md](dev/POD.md)). By hand,
+on a GPU machine that already exists:
 
 ```bash
 bash voice-pipeline/pod/setup.sh   # once: installs everything, starts the LLM
