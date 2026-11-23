@@ -117,7 +117,7 @@ while kill -0 $SETUP 2>/dev/null; do
   if [ $((SECONDS - last_report)) -ge 30 ]; then
     last_report=$SECONDS
     case $step in
-      1) say "  still installing: $(size_gb $UV_CACHE /root/venvs) GB of packages so far" ;;
+      1) say "  still installing: $(size_gb $UV_CACHE /root/venvs) GB downloaded and installed so far" ;;
       2) now=$(size_gb /root/hf)
          if [ "$now" = "${last_size:-}" ] && [ "$now" != 0.0 ]; then
            say "  downloaded ($now GB); loading it onto the GPU"
