@@ -1,4 +1,4 @@
-// Shared helpers for scripts/setup.mjs, scripts/dev.mjs and scripts/docker.mjs.
+// Shared helpers for scripts/setup.mjs, scripts/dev.mjs, scripts/docker.mjs and scripts/test.mjs.
 //
 // Commands are spawned without a shell: npm and the Supabase CLI are run as Node scripts through
 // process.execPath, because Windows cannot spawn npm.cmd/npx.cmd directly, and a shell would make
@@ -19,8 +19,10 @@ export const FRONTEND_DIR = path.join(ROOT, "frontend", "tiwwsah_webapp");
 export const BACKEND_DIR = path.join(ROOT, "backend");
 export const PIPELINE_DIR = path.join(ROOT, "voice-pipeline");
 
-// What the backend expects from the local mock pipeline. Matches compose.yaml. The mock never calls
-// the backend, so this value protects nothing; the backend only needs one to accept calls.
+// The shared secret the local backend expects from the voice pipeline. Matches compose.yaml. The
+// mock never calls the backend, so for it the backend only needs a value to accept calls. A real
+// pipeline run against the local stack sends it as PIPELINE_BACKEND_SECRET (see the root README).
+// Local only: a public value like the Supabase CLI's default keys.
 export const LOCAL_PIPELINE_SECRET = "local-dev-pipeline-secret";
 
 const MIN_NODE = [22, 13];
@@ -78,8 +80,8 @@ export function port(name, fallback) {
 }
 
 /**
- * Run a command to completion, streaming its output unless `capture` is set. Exits the script if it
- * fails, or returns null with `allowFailure`.
+ * Run a command to completion, streaming its output unless `capture` is set. Returns its output
+ * ("" when not captured). Exits the script if it fails, or returns null with `allowFailure`.
  */
 export function run(command, args, { cwd = ROOT, env, capture = false, allowFailure = false } = {}) {
   const result = spawnSync(command, args, {
@@ -98,7 +100,8 @@ export function run(command, args, { cwd = ROOT, env, capture = false, allowFail
     if (allowFailure) return null;
     fail(`\`${[path.basename(command), ...args].join(" ")}\` exited with code ${result.status}.`);
   }
-  return result.stdout;
+  // spawnSync gives null stdout when it is not captured; "" keeps null meaning failure.
+  return result.stdout ?? "";
 }
 
 /**

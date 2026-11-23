@@ -4,7 +4,7 @@
 |---|---|
 | [`frontend/tiwwsah_webapp`](frontend/tiwwsah_webapp/README.md) | Next.js web app |
 | [`backend`](backend/README.md) | FastAPI API |
-| [`voice-pipeline`](voice-pipeline/README.md) | Call WebSocket protocol and a mock of the voice pipeline |
+| [`voice-pipeline`](voice-pipeline/README.md) | Voice pipeline (needs a GPU), its call WebSocket protocol and a mock of it |
 | [`supabase`](supabase/README.md) | Database migrations and local Supabase config |
 | [`docs`](docs/README.md) | Authentication and other design docs |
 
@@ -120,6 +120,31 @@ The mock does not report back to the backend, so the backend never learns how th
 copy of the call stays `queued`. The first time the call's owner reads it, or their call history,
 more than two minutes after it started, it changes to `failed` (`timed_out`). The mock's own canned
 result is at `GET http://localhost:8001/api/v1/calls/<call id>`.
+
+The real voice pipeline needs a large NVIDIA GPU, so neither option runs it. The team tests it on a
+rented GPU with `voice-pipeline/dev/pod.py` (see [voice-pipeline/dev/POD.md](voice-pipeline/dev/POD.md)).
+That pod is not connected to your local backend: it uses its own test page and token.
+
+Running the real pipeline against the local stack is not scripted. The frontend cannot make a call
+yet, so there is nothing to drive it with end to end. When that changes, a pipeline on the same
+machine can use the local backend: it accepts the local Supabase's `http://127.0.0.1` voice links,
+and the backend's pipeline secret here is `local-dev-pipeline-secret` (see
+[voice-pipeline/BACKEND.md](voice-pipeline/BACKEND.md)). `npm run dev` always points the backend at
+the mock, so it would need to be started another way.
+
+### Tests
+
+```bash
+npm test
+```
+
+runs the backend's tests and the voice pipeline's, in the backend's environment. Neither needs
+Docker, Supabase or a GPU. It runs both even if the first fails. To run one, use `uv run pytest` in
+`backend`, or `uv run pytest ../voice-pipeline/tests` there.
+
+Some tests are skipped, not failed, when what they need is missing: the voice upload tests without
+ffmpeg, and a few pipeline tests that need the real pipeline's model packages
+(`voice-pipeline/requirements.txt`). The summary line shows how many were skipped.
 
 ### Supabase commands
 

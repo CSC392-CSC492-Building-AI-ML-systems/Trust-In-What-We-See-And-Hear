@@ -10,6 +10,7 @@
     "setup": "node scripts/setup.mjs",
     "dev": "node scripts/dev.mjs",
     "docker": "node scripts/docker.mjs",
+    "test": "node scripts/test.mjs",
     "supabase": "supabase"
   },
   "devDependencies": {
