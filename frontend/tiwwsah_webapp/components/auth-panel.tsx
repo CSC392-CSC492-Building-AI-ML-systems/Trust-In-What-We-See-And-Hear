@@ -156,13 +156,6 @@ export function AuthPanel() {
           </label>
         )}
 
-        {mode === "register" && (
-          <label className="auth-checkbox auth-terms">
-            <input type="checkbox" name="terms" required />
-            <span>I agree to the terms and understand that ScamAI provides educational simulations.</span>
-          </label>
-        )}
-
         {error && <p className="auth-error" role="alert">{error}</p>}
         {success && <p className="auth-success" role="status">{success}</p>}
 

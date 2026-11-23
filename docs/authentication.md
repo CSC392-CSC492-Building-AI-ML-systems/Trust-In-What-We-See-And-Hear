@@ -302,8 +302,9 @@ registered, so other people cannot find out which emails have accounts. Always s
 Check that `password` and `confirmPassword` match before calling `signUp`. Trim both names and
 require 1–50 characters each: onboarding fails with `422 invalid_names` otherwise.
 
-**Terms checkbox**: move it to the onboarding form. The backend records privacy policy acceptance
-when it creates the user's profile row during onboarding (section 2.7).
+**Terms checkbox**: there is none at registration. The user reads and accepts the privacy policy
+on `/onboarding/privacy`, the step before the onboarding form. The backend records privacy policy
+acceptance when it creates the user's profile row during onboarding (section 2.7).
 
 **Forgot password**
 
@@ -449,7 +450,7 @@ The email is not part of the profile. If a page needs it, read it from Supabase:
 - The first and last name are **not** sent. The backend takes them from the user's Supabase
   metadata (`user_metadata.first_name` and `user_metadata.last_name`, set at sign-up), removes
   surrounding spaces and requires 1–50 characters each.
-- `accept_privacy_policy`: must be `true`; this is the terms checkbox.
+- `accept_privacy_policy`: must be `true`; this is the checkbox on `/onboarding/privacy`.
 - `answers`: stored as sent, at most 10,000 bytes as JSON. The question set is still **TBD**.
 
 Responses:
@@ -487,7 +488,7 @@ router.refresh();
 - [ ] `app/auth/confirm/route.ts`
 - [ ] `/reset-password` page
 - [ ] `lib/api.ts`; `getCurrentUser` calls the backend and handles `401` and `404`
-- [ ] Onboarding collects username, first and last name and privacy policy acceptance (terms checkbox moved there)
+- [ ] Onboarding collects username, first and last name and privacy policy acceptance (accepted on `/onboarding/privacy`)
 - [ ] Sign out in the sidebar
 
 ---

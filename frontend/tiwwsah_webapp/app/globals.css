@@ -61,8 +61,6 @@ button { cursor: pointer; }
 .auth-form input[type="text"], .auth-form input[type="email"], .auth-form input[type="password"] { width: 100%; height: 45px; padding: 0 13px; border: 1px solid #d9deed; border-radius: 9px; outline: none; color: var(--ink); background: white; font: inherit; font-size: 14px; transition: border-color 140ms ease, box-shadow 140ms ease; }
 .auth-form input::placeholder { color: #a3acc3; }
 .auth-form input:focus { border-color: #8174ff; box-shadow: 0 0 0 3px rgba(102,85,255,.12); }
-.auth-checkbox { display: flex !important; grid-template-columns: auto 1fr; align-items: flex-start; gap: 8px !important; color: var(--muted) !important; font-size: 11px !important; font-weight: 550 !important; line-height: 1.45; }
-.auth-checkbox input { width: 15px; height: 15px; margin: 1px 0 0; accent-color: var(--violet-600); }
 .auth-text-button { padding: 0; border: 0; color: var(--violet-600); background: transparent; font-size: 11px; font-weight: 700; }
 .auth-forgot { justify-self: end; }
 .auth-submit { display: flex; min-height: 46px; align-items: center; justify-content: center; gap: 9px; border-radius: 9px; font-size: 13px; font-weight: 750; transition: transform 140ms ease, box-shadow 140ms ease, background 140ms ease; }
@@ -126,6 +124,17 @@ fieldset.onboarding-field { min-width: 0; margin: 0; padding: 0; border: 0; }
 .onboarding-actions button:hover { transform: translateY(-1px); }
 .onboarding-actions button:disabled { cursor: wait; opacity: .72; transform: none; }
 .onboarding-actions button svg { width: 16px; height: 16px; }
+
+/* Privacy policy (onboarding step) */
+.privacy-policy-text { max-height: 360px; overflow-y: auto; padding: 4px 18px 18px; border: 1px solid #dbe0ee; border-radius: 11px; background: #fbfcff; color: var(--ink); }
+.privacy-policy-text:focus-visible { outline: 2px solid #8174ff; outline-offset: 2px; }
+.privacy-policy-version { margin: 14px 0 0; color: var(--violet-600); font-size: 10.5px; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
+.privacy-policy-text h2 { margin: 18px 0 0; font-size: 13px; }
+.privacy-policy-text p:not(.privacy-policy-version) { margin: 6px 0 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.privacy-policy-hint { margin: 12px 0 0; color: #939db5; font-size: 11px; }
+.privacy-policy-accept { display: flex; align-items: flex-start; gap: 9px; margin-top: 18px; color: var(--ink); font-size: 12px; font-weight: 600; line-height: 1.5; cursor: pointer; }
+.privacy-policy-accept:has(input:disabled) { color: #939db5; cursor: not-allowed; }
+.privacy-policy-accept input { width: 16px; height: 16px; margin: 1px 0 0; flex: 0 0 16px; accent-color: var(--violet-600); }
 
 /* Identity verification placeholder */
 .verification-page { min-height: 100vh; padding: 0 28px 48px; background: radial-gradient(circle at 15% 10%, rgba(102,85,255,.11), transparent 28%), var(--canvas); }

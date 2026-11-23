@@ -23,7 +23,9 @@ export function IdentityVerification() {
 
   function continueToOnboarding() {
     setIsContinuing(true);
-    router.replace("/onboarding");
+
+    // move to privacy instead of onboarding form
+    router.replace("/onboarding/privacy");
     router.refresh();
   }
 

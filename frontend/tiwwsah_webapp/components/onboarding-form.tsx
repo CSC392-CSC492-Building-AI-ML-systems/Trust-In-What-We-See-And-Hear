@@ -2,7 +2,7 @@
 
 import { ArrowRight, ShieldCheck } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { apiFetch } from "@/lib/api-fetch";
 import {
   buildOnboardingAnswers,
@@ -12,6 +12,7 @@ import {
   usernameFromName,
   withRandomSuffix,
 } from "@/lib/onboarding";
+import { clearPrivacyPolicyAcceptance, hasAcceptedPrivacyPolicy } from "@/lib/privacy-policy";
 import { createClient } from "@/lib/supabase/client";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL;
@@ -46,6 +47,11 @@ export function OnboardingForm() {
   const [isContinuing, setIsContinuing] = useState(false);
   const [error, setError] = useState("");
 
+  // The privacy policy must be accepted on /onboarding/privacy before onboarding.
+  useEffect(() => {
+    if (!hasAcceptedPrivacyPolicy()) router.replace("/onboarding/privacy");
+  }, [router]);
+
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError("");
@@ -53,6 +59,10 @@ export function OnboardingForm() {
 
     try {
       if (!API_URL) throw new Error("NEXT_PUBLIC_API_URL is not configured.");
+      if (!hasAcceptedPrivacyPolicy()) {
+        router.replace("/onboarding/privacy");
+        return;
+      }
 
       const formData = new FormData(event.currentTarget);
       const answers = buildOnboardingAnswers(formData);
@@ -67,7 +77,7 @@ export function OnboardingForm() {
       for (let attempt = 0; attempt < MAX_USERNAME_ATTEMPTS && !created; attempt++) {
         const response = await apiFetch(`${API_URL}/api/v1/users/me/onboarding`, "POST", {
           username,
-          // Accepted with the terms checkbox at registration.
+          // Accepted on /onboarding/privacy (checked above).
           accept_privacy_policy: true,
           answers,
         });
@@ -101,6 +111,7 @@ export function OnboardingForm() {
         if (!response.ok) throw new Error("We couldn’t save your language. Please try again.");
       }
 
+      clearPrivacyPolicyAcceptance();
       router.replace("/dashboard");
       router.refresh();
     } catch (ex) {
@@ -202,6 +213,5 @@ Family structure: list family members? mom, dad, sibling, dog, etc. a call can c
 neice where they don't have one. it's a good space to tailor it.
 
 get location -> prompt location
-static page so user can read the privacy policy / terms and conditions.
 
 */
