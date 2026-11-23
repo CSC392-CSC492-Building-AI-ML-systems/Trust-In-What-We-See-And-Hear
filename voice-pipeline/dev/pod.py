@@ -573,7 +573,7 @@ def cmd_start(api: RunPod, args: argparse.Namespace) -> None:
         remote.run("tar -xzf /root/app.tar.gz -C /root/app && rm /root/app.tar.gz")
         say(f"Uploading the voice recording {voice.name}...")
         upload(remote, voice.read_bytes(), "/root/voice.wav")
-        say("Starting the setup on the pod. The whole thing takes 10 to 20 minutes;")
+        say("Starting the setup on the pod. It takes 5 to 25 minutes, depending on the machine;")
         say("progress is shown below. You can close this window at any time: the setup")
         say("carries on, and `status` shows where it is.")
         say()

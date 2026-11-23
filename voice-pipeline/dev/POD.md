@@ -4,8 +4,8 @@ The pipeline needs a large GPU, so we rent one from RunPod by the hour.
 `pod.py` rents it, sets it up and gives you a link for test calls in the
 browser. It works on Windows, macOS and Linux.
 
-A pod costs about $0.70 to $1.10 an hour on the team's account, and setup
-takes 15 to 25 minutes. It stops itself after 30 minutes without a call, but
+A pod costs about $0.60 to $1.10 an hour on the team's account, and setup
+takes 5 to 25 minutes, depending on the machine RunPod gives you. It stops itself after 30 minutes without a call, but
 run `stop` when you are done.
 
 ## Before the first time
