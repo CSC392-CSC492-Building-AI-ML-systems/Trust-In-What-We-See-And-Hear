@@ -7,11 +7,10 @@ stands in for the frontend until the app can make calls. Run it from
 `backend/`, which has the packages it needs:
 
     uv run python ../voice-pipeline/dev/backend_call.py \\
-        --email alice@example.com --password demo-password reply1.wav reply2.wav
+        --email alice@example.com --password demo-password
 
-Each reply is a WAV, 16 kHz mono 16-bit; one is sent after each of the
-caller's turns. On macOS, make one with:
-    say -o reply.wav --data-format=LEI16@16000 "Who is this? Why are you calling?"
+Without WAVs it plays the three short replies in `dev/replies/`. Your own
+replies go after the options, one WAV per caller turn, 16 kHz mono 16-bit.
 
 The user needs an accepted consent from a friend whose voice is ready.
 `--save` keeps the caller's audio for listening to afterwards.
@@ -32,9 +31,14 @@ from pathlib import Path
 
 import httpx
 import websockets
+from websockets.exceptions import ConnectionClosed, WebSocketException
 
 FRAME_BYTES = 1280  # 40 ms of 16 kHz 16-bit mono
 FRAME_SECONDS = 0.04
+DEFAULT_REPLIES = sorted((Path(__file__).parent / "replies").glob("*.wav"))
+# Close codes from PROTOCOL.md that mean the pod would not take the call.
+REFUSED = {4401: "the pod refused the call's token: the claim failed or came too late "
+                 "(see the pod's server log)"}
 
 
 class CallError(Exception):
@@ -92,7 +96,12 @@ async def talk(ws_url: str, replies: list[bytes], save: Path | None, wait_ready:
         turns = 0
 
         async def next_message(timeout: float) -> dict:
-            raw = await asyncio.wait_for(ws.recv(), timeout)
+            try:
+                raw = await asyncio.wait_for(ws.recv(), timeout)
+            except ConnectionClosed as e:
+                code = e.rcvd.code if e.rcvd else None
+                raise CallError(REFUSED.get(code) or f"the pod closed the connection "
+                                f"(code {code}: {e.rcvd.reason if e.rcvd else 'none'})") from e
             return json.loads(raw)
 
         message = await next_message(wait_ready)
@@ -146,7 +155,8 @@ def wait_result(api: httpx.Client, call_id: str, timeout: float = 90) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("replies", nargs="*", type=Path, help="the user's replies, in order")
+    parser.add_argument("replies", nargs="*", type=Path,
+                        help="the user's replies, in order (default: the ones in dev/replies/)")
     parser.add_argument("--backend", default="http://localhost:8000")
     parser.add_argument("--supabase", default="http://127.0.0.1:54321",
                         help="Supabase's address, for signing in")
@@ -160,7 +170,7 @@ def main() -> None:
                         help="seconds to wait for the caller's voice to be set up (default 120)")
     args = parser.parse_args()
     try:
-        replies = [read_reply(p) for p in args.replies]
+        replies = [read_reply(p) for p in args.replies or DEFAULT_REPLIES]
         key = args.key or backend_key()
         token = sign_in(args.supabase.rstrip("/"), key, args.email, args.password)
         with httpx.Client(base_url=args.backend, timeout=30,
@@ -175,7 +185,7 @@ def main() -> None:
             indent=2))
         if result.get("status") != "completed":
             sys.exit(1)
-    except (CallError, httpx.HTTPError, OSError, asyncio.TimeoutError) as e:
+    except (CallError, httpx.HTTPError, OSError, asyncio.TimeoutError, WebSocketException) as e:
         sys.exit(f"Error: {e or type(e).__name__}")
 
 

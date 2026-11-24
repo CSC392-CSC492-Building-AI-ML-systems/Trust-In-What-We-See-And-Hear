@@ -543,7 +543,14 @@ def call_link(pod_id: str, token: str) -> str:
 def backend_settings(pod_id: str) -> list[str]:
     """What the backend needs to send its calls to this pod."""
     return [f"PIPELINE_WS_URL=wss://{pod_id}-8001.proxy.runpod.net",
-            f"PIPELINE_BACKEND_SECRET=<the secret in {BACKEND_SECRET_FILE}>"]
+            f"PIPELINE_BACKEND_SECRET=<{secret_source()}>"]
+
+
+def secret_source() -> str:
+    """Where backend_secret() takes the secret from, for the hints."""
+    if os.environ.get("PIPELINE_BACKEND_SECRET", "").strip():
+        return "the PIPELINE_BACKEND_SECRET set in your environment"
+    return f"the secret in {BACKEND_SECRET_FILE}"
 
 
 def show_ready(pod: dict, env: dict) -> None:

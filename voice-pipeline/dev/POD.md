@@ -94,18 +94,19 @@ the local Supabase, not the rest of its API.
    | Setting | Value |
    |---|---|
    | `PIPELINE_WS_URL` | `wss://<pod id>-8001.proxy.runpod.net` |
-   | `PIPELINE_BACKEND_SECRET` | the contents of `~/.tiwwsah/pipeline-backend-secret.txt`, which `pod.py` makes the first time |
+   | `PIPELINE_BACKEND_SECRET` | the contents of `~/.tiwwsah/pipeline-backend-secret.txt`, which `pod.py` makes the first time (or your own `PIPELINE_BACKEND_SECRET`, if you set one when starting the pod) |
    | `PIPELINE_SUPABASE_URL` | the voice-link address from `tunnels.py` (leave it out with `--no-supabase`) |
 
 5. Make a call. Until the app can, from `backend/`:
 
    ```bash
-   say -o r1.wav --data-format=LEI16@16000 "Hello? Who is this?"
    uv run python ../voice-pipeline/dev/backend_call.py \
-       --email alice@example.com --password demo-password r1.wav
+       --email alice@example.com --password demo-password
    ```
 
-   It starts a call, plays each WAV as your side of the conversation,
+   It starts a call, plays the three short replies in `dev/replies/` as
+   your side of the conversation (or your own WAVs, 16 kHz mono 16-bit,
+   listed after the options),
    hangs up and prints the score the backend stored. The persona needs a
    voice uploaded through `PUT /api/v1/users/me/voice` (the local demo
    accounts have none), and each call uses up one consent.

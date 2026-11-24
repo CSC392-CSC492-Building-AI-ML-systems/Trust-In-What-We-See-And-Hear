@@ -383,3 +383,13 @@ def test_the_launch_returns_at_once_while_the_setup_keeps_running(tmp_path, monk
             break
         time.sleep(0.1)
     assert (tmp_path / "token").read_text().strip() == "a b'c"
+
+
+def test_the_secret_hint_names_where_the_secret_came_from(monkeypatch, tmp_path):
+    monkeypatch.setattr(pod, "BACKEND_SECRET_FILE", tmp_path / "secret.txt")
+    monkeypatch.delenv("PIPELINE_BACKEND_SECRET", raising=False)
+    assert "secret.txt" in pod.backend_settings("abc")[1]
+    monkeypatch.setenv("PIPELINE_BACKEND_SECRET", "from-env")
+    hint = pod.backend_settings("abc")[1]
+    assert "environment" in hint and "secret.txt" not in hint and "from-env" not in hint
+

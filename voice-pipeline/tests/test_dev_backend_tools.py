@@ -120,3 +120,27 @@ def test_replies_must_be_in_the_microphone_format(tmp_path):
     write_wav(tmp_path / "cd.wav", rate=44100, channels=2)
     with pytest.raises(backend_call.CallError, match="16 kHz mono"):
         backend_call.read_reply(tmp_path / "cd.wav")
+
+
+def test_the_default_replies_are_in_the_microphone_format():
+    assert len(backend_call.DEFAULT_REPLIES) == 3
+    for path in backend_call.DEFAULT_REPLIES:
+        assert len(backend_call.read_reply(path)) > 16000  # over half a second each
+
+
+def test_a_refused_call_is_an_error_not_a_traceback():
+    # The pod accepts the WebSocket, then closes it with 4401 when the claim fails.
+    import asyncio
+    from websockets.asyncio.server import serve
+
+    async def refuse(ws):
+        await ws.close(4401, "invalid call token")
+
+    async def run():
+        async with serve(refuse, "127.0.0.1", 0) as server:
+            port = server.sockets[0].getsockname()[1]
+            await backend_call.talk(f"ws://127.0.0.1:{port}", [], None, 5)
+
+    with pytest.raises(backend_call.CallError, match="refused the call's token"):
+        asyncio.run(run())
+
