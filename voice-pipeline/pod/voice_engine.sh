@@ -37,8 +37,11 @@ case "$ENGINE" in
     ;;
   drama)
     $UV venv -q --python 3.12 /root/venvs/omni
-    VIRTUAL_ENV=/root/venvs/omni $UV pip install -q vllm==0.34.0 ninja --torch-backend=cu130
-    VIRTUAL_ENV=/root/venvs/omni $UV pip install -q git+https://github.com/vllm-project/vllm-omni.git
+    VIRTUAL_ENV=/root/venvs/omni $UV pip install -q vllm==0.33.0 ninja --torch-backend=cu130
+    # Pinned: vLLM-Omni dropped Drama on 2026-11-18 (#10365, vllm 0.34, no Model
+    # Runner V1). This is the last commit before that, built for vllm 0.33.0.
+    VIRTUAL_ENV=/root/venvs/omni $UV pip install -q \
+      git+https://github.com/vllm-project/vllm-omni.git@ca9398dc9f18b6536daa05fd1980e2e9d370ed4f
     rm -rf "$UV_CACHE_DIR"
     # ninja and nvcc: it compiles a kernel at start-up. Its share of the GPU
     # is set because the LLM is already loaded (it takes 90% by default).
