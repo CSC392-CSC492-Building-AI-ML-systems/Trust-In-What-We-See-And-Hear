@@ -68,34 +68,45 @@ async def start_verification(
 
     Returns the provider's page where the user verifies (an ID document, a
     selfie and a liveness check). Calling this again before the user finishes
-    returns the same session. The result arrives later: poll
+    returns the same session. An unfinished session's status is checked with
+    the provider first, so a session the user already passed gives
+    `409 already_verified`. The result arrives later: poll
     `GET /users/me/verification`.
 
     Clients cannot mark themselves verified; only the provider's result does.
     """
     profile = await _profile(supabase_db, user.user_id)
-    if profile["verified_at"] is not None:
-        api_error(
-            status.HTTP_409_CONFLICT, "already_verified", "Your identity is already verified."
-        )
-    latest = await latest_verification(supabase_db, user.user_id)
-    if latest is not None and latest["status"] == "in_review":
-        api_error(
-            status.HTTP_409_CONFLICT,
-            "verification_in_review",
-            "Your verification is being reviewed. You will be able to retry if it is declined.",
-        )
+    verified = profile["verified_at"] is not None
+    latest = None
+    if not verified:
+        latest = await latest_verification(supabase_db, user.user_id)
     settings = request.app.state.settings
     try:
+        if latest is not None and latest["status"] not in SETTLED:
+            # The stored status may be behind (the user can finish on Didit
+            # without GET being called), and Didit never reuses an approved or
+            # in-review session, so check it before deciding.
+            latest, now_verified = await sync(supabase_db, didit, latest)
+            verified = verified or now_verified
+        if verified:
+            api_error(
+                status.HTTP_409_CONFLICT, "already_verified", "Your identity is already verified."
+            )
+        if latest is not None and latest["status"] == "in_review":
+            api_error(
+                status.HTTP_409_CONFLICT,
+                "verification_in_review",
+                "Your verification is being reviewed. You will be able to retry if it is declined.",
+            )
         session = await didit.create_session(
             settings.didit_workflow_id,
             vendor_data=str(user.user_id),
             callback=settings.identity_verification_return_url,
         )
+        row = await record_session(supabase_db, user.user_id, session)
     except IdentityVerificationError as exc:
         logger.error("Could not start a verification session: %s", exc)
         api_error(status.HTTP_503_SERVICE_UNAVAILABLE, *UNAVAILABLE)
-    row = await record_session(supabase_db, user.user_id, session)
     return VerificationStartResponse(
         verification_id=row["id"], status=row["status"], url=session.url
     )

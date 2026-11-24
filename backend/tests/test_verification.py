@@ -167,7 +167,7 @@ def test_start_again_returns_the_unfinished_session(db_client, db, didit):
         postgres_error("23505", "identity_verifications_provider_session_id_key"),
     )
     db.on("PATCH", "identity_verifications", rows(verification("in_progress")))
-    didit.replies.append(session("In Progress"))
+    didit.replies += [decision("Not Started"), session("In Progress")]
 
     response = db_client.post(URL)
 
@@ -177,6 +177,63 @@ def test_start_again_returns_the_unfinished_session(db_client, db, didit):
     lookup = db.sent("GET", "identity_verifications")[1]
     assert lookup.url.params["provider_session_id"] == f"eq.{SESSION_ID}"
     assert lookup.url.params["user_id"] == f"eq.{ME}"
+
+
+def test_start_finds_the_unfinished_session_was_approved(db_client, db, didit):
+    # The user passed on Didit, but no GET has recorded it yet.
+    db.on("GET", "users", rows(profile()))
+    db.on("GET", "identity_verifications", rows(verification("in_progress")))
+    db.on("PATCH", "users", rows({"id": str(ME)}))
+    db.on("PATCH", "identity_verifications", rows(verification("approved")))
+    didit.replies.append(decision("Approved"))
+
+    response = db_client.post(URL)
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "already_verified"
+    [request] = didit.requests  # no new session
+    assert request.method == "GET"
+
+
+def test_start_finds_the_unfinished_session_is_in_review(db_client, db, didit):
+    db.on("GET", "users", rows(profile()))
+    db.on("GET", "identity_verifications", rows(verification("in_progress")))
+    db.on("PATCH", "identity_verifications", rows(verification("in_review")))
+    didit.replies.append(decision("In Review"))
+
+    response = db_client.post(URL)
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "verification_in_review"
+    assert len(didit.requests) == 1
+
+
+def test_start_when_the_unfinished_session_cannot_be_checked(db_client, db, didit):
+    db.on("GET", "users", rows(profile()))
+    db.on("GET", "identity_verifications", rows(verification("in_progress")))
+    didit.replies.append(httpx.Response(503))
+
+    response = db_client.post(URL)
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "verification_unavailable"
+    assert len(didit.requests) == 1
+
+
+def test_start_when_didit_returns_another_users_session(db_client, db, didit):
+    db.on("GET", "users", rows(profile()))
+    db.on("GET", "identity_verifications", rows(), rows())  # latest; lookup by session and user
+    db.on(
+        "POST",
+        "identity_verifications",
+        postgres_error("23505", "identity_verifications_provider_session_id_key"),
+    )
+    didit.replies.append(session())
+
+    response = db_client.post(URL)
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "verification_unavailable"
 
 
 def test_start_when_already_verified(db_client, db, didit):
@@ -192,12 +249,14 @@ def test_start_when_already_verified(db_client, db, didit):
 def test_start_while_in_review(db_client, db, didit):
     db.on("GET", "users", rows(profile()))
     db.on("GET", "identity_verifications", rows(verification("in_review")))
+    didit.replies.append(decision("In Review"))  # still being reviewed
 
     response = db_client.post(URL)
 
     assert response.status_code == 409
     assert response.json()["detail"]["code"] == "verification_in_review"
-    assert not didit.requests
+    [request] = didit.requests  # checked, but no new session
+    assert request.method == "GET"
 
 
 @pytest.mark.parametrize("latest", ["declined", "expired", "abandoned"])
@@ -287,6 +346,22 @@ def test_get_checks_an_unsettled_session_and_verifies_the_user(db_client, db, di
     assert verify.url.params["id"] == f"eq.{ME}"
     assert verify.url.params["verified_at"] == "is.null"  # an earlier verification is kept
     assert body(verify) == {"verified_at": "now"}
+    # The user is verified before the session is saved as approved.
+    [save] = db.sent("PATCH", "identity_verifications")
+    assert db.requests.index(verify) < db.requests.index(save)
+
+
+def test_get_leaves_the_session_unsettled_if_verifying_the_user_fails(db_client, db, didit):
+    db.on("GET", "users", rows(profile()))
+    db.on("GET", "identity_verifications", rows(verification("in_progress")))
+    db.on("PATCH", "users", httpx.Response(503))
+    didit.replies.append(decision("Approved"))
+
+    response = db_client.get(URL)
+
+    assert response.status_code == 503
+    # Still in_progress, so the next GET asks Didit again and retries.
+    assert not db.sent("PATCH", "identity_verifications")
 
 
 def test_get_records_a_new_status_without_verifying(db_client, db, didit):
@@ -309,13 +384,15 @@ def test_get_with_an_unchanged_status_writes_nothing(db_client, db, didit):
     assert db_client.get(URL).json()["verification"]["status"] == "in_progress"
 
 
-def test_get_does_not_ask_about_a_settled_session(db_client, db, didit):
-    db.on("GET", "users", rows(profile(verified=True)))
-    db.on("GET", "identity_verifications", rows(verification("approved")))
+@pytest.mark.parametrize("settled", ["approved", "declined", "expired", "abandoned", "kyc_expired"])
+def test_get_does_not_ask_about_a_settled_session(db_client, db, didit, settled):
+    db.on("GET", "users", rows(profile(verified=settled == "approved")))
+    db.on("GET", "identity_verifications", rows(verification(settled)))
 
     response = db_client.get(URL)
 
-    assert response.json()["verified"] is True
+    assert response.json()["verified"] is (settled == "approved")
+    assert response.json()["verification"]["status"] == settled
     assert not didit.requests
 
 

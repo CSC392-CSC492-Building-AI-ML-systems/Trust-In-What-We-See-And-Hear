@@ -158,6 +158,8 @@ create table public.identity_verifications (
   user_id             uuid not null references public.users(id) on delete cascade,
   provider_session_id text unique not null,  -- Didit's session_id
   -- Didit's status in snake case, e.g. 'Not Started' is stored as 'not_started'.
+  -- 'kyc_expired' is allowed because Didit has it, but is only seen once the
+  -- webhook is added (see backend/app/modules/verification/README.md).
   status              text not null check (status in (
     'not_started', 'in_progress', 'in_review', 'awaiting_user', 'resubmitted',
     'approved', 'declined', 'expired', 'abandoned', 'kyc_expired'
@@ -483,8 +485,9 @@ the frontend calls Supabase Auth directly, which writes `auth.users`.
 
 | Endpoint | Reads | Writes |
 |---|---|---|
-| `POST VerifyUser` | `users`, `identity_verifications` | `identity_verifications` |
-| `GET getVerification` | `users`, `identity_verifications` | `identity_verifications`, `users.verified_at` (when Didit reports a new status) || `POST finishOnboarding` | `users` | `users` (creates the row: `username`, `first_name`/`last_name` copied from Supabase `user_metadata`, privacy policy acceptance, `onboarding_answers`) |
+| `POST VerifyUser` | `users`, `identity_verifications` | `identity_verifications`, `users.verified_at` (when Didit reports an unfinished session was approved) |
+| `GET getVerification` | `users`, `identity_verifications` | `identity_verifications`, `users.verified_at` (when Didit reports a new status) |
+| `POST finishOnboarding` | `users` | `users` (creates the row: `username`, `first_name`/`last_name` copied from Supabase `user_metadata`, privacy policy acceptance, `onboarding_answers`) |
 | `GET getUserInfo` | `users`, `voices` | – |
 | `PUT editUserInfo` | `users` | `users` (not `verified_at`) |
 | `POST sendFriendRequest` | `users`, `friendships` | `friendships` |

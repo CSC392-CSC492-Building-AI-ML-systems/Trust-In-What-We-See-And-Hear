@@ -17,7 +17,11 @@ import logging
 from typing import Any
 from uuid import UUID
 
-from app.integrations.identity_verification import DiditClient, VerificationSession
+from app.integrations.identity_verification import (
+    DiditClient,
+    IdentityVerificationError,
+    VerificationSession,
+)
 from app.integrations.supabase import SupabaseConflictError, SupabaseDatabase
 from app.modules.consents.service import DATABASE_NOW
 
@@ -26,9 +30,11 @@ logger = logging.getLogger(__name__)
 TABLE = "identity_verifications"
 COLUMNS = "id,user_id,provider_session_id,status,created_at,updated_at"
 
-# Statuses that are not checked with Didit again. Only someone at Didit acting
-# by hand, or the document expiring, could change them.
-SETTLED = frozenset({"approved", "declined", "expired", "kyc_expired"})
+# Statuses that are not checked with Didit again: Didit never changes them on
+# its own, only a reviewer acting by hand (or, for `approved`, the document
+# expiring, which becomes `kyc_expired`). Without a webhook the backend does not
+# see those later changes; see README.md.
+SETTLED = frozenset({"approved", "declined", "expired", "abandoned", "kyc_expired"})
 
 
 async def latest_verification(db: SupabaseDatabase, user_id: UUID) -> dict[str, Any] | None:
@@ -41,7 +47,11 @@ async def latest_verification(db: SupabaseDatabase, user_id: UUID) -> dict[str, 
 async def record_session(
     db: SupabaseDatabase, user_id: UUID, session: VerificationSession
 ) -> dict[str, Any]:
-    """Store a new session, or update the stored one Didit handed back again."""
+    """Store a new session, or update the stored one Didit handed back again.
+
+    Raises IdentityVerificationError if Didit hands back a session stored for
+    another user.
+    """
     try:
         return await db.insert(
             TABLE,
@@ -60,7 +70,9 @@ async def record_session(
             COLUMNS,
         )
         if not rows:
-            raise
+            # Sessions are per user (vendor_data), so this means a misconfiguration.
+            logger.error("Didit returned session %s, stored for another user.", session.session_id)
+            raise IdentityVerificationError("Didit returned another user's session") from None
         row, _ = await apply_status(db, rows[0], session.status)
         return row
 
@@ -86,18 +98,21 @@ async def apply_status(
     """Record a session's new status, and verify its user if it is approved.
 
     Returns the row and whether the user was verified by this change.
+
+    The user is verified before the session is saved as `approved`: if the
+    second write fails, the session is still unsettled, so the next sync tries
+    again (and the `verified_at` write then matches nothing).
     """
     if new_status == row["status"]:
         return row, False
+    if new_status == "approved":
+        await db.update(
+            "users",
+            # An earlier verification's time is kept.
+            {"id": f"eq.{row['user_id']}", "verified_at": "is.null"},
+            {"verified_at": DATABASE_NOW},
+            "id",
+        )
     updated = await db.update(TABLE, {"id": f"eq.{row['id']}"}, {"status": new_status}, COLUMNS)
     row = updated[0] if updated else {**row, "status": new_status}
-    if new_status != "approved":
-        return row, False
-    await db.update(
-        "users",
-        # An earlier verification's time is kept.
-        {"id": f"eq.{row['user_id']}", "verified_at": "is.null"},
-        {"verified_at": DATABASE_NOW},
-        "id",
-    )
-    return row, True
+    return row, new_status == "approved"
