@@ -61,6 +61,17 @@ class Settings(BaseSettings):
     # (the pipeline caps calls at 600 s, plus time for scoring), so it is failed.
     call_result_timeout_seconds: int = Field(default=15 * 60, gt=0)
 
+    # Identity verification with Didit (app/modules/verification). Verification
+    # cannot start without the API key and the workflow ID. Sandbox and live
+    # use different keys, same URL.
+    didit_api_url: str = "https://verification.didit.me"
+    didit_api_key: SecretStr | None = None
+    # The workflow to run, from the Didit console (Basic KYC: ID, liveness, face match).
+    didit_workflow_id: str | None = None
+    # Where Didit sends the user when they finish, e.g. the frontend's
+    # /verify-identity page. Optional: without it Didit shows its own end page.
+    identity_verification_return_url: str | None = None
+
 
 @lru_cache
 def get_settings() -> Settings:

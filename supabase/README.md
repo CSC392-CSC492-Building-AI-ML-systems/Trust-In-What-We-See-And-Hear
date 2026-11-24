@@ -40,6 +40,7 @@ Integration settings this relies on (**Project Settings → Integrations → Git
 |---|---|
 | `0001_migration1.sql` | Initial schema: enums, tables, indexes, `updated_at` triggers and Row Level Security |
 | `0005_calls_pipeline.sql` | `scam_scenarios.ask`; the `calls` columns the voice pipeline needs (claim token hash, context, time limit); each user's private note about a friend (`friendships.requester_notes`/`addressee_notes`), hidden from direct client reads |
+| `0006_identity_verifications.sql` | `identity_verifications`: each identity verification session started with Didit and its status (backend only, no personal data) |
 
 ## Making a schema change
 

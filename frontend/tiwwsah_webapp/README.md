@@ -17,4 +17,9 @@ npm run dev
 It needs `.env.local` (copy `.env.example`, or let the root `npm run setup` create it). Then open
 [http://localhost:3000](http://localhost:3000).
 
+## Docs
+
+- [Identity verification](docs/identity-verification.md): the verification endpoints, the
+  `/verify-identity` page and what the frontend needs to implement.
+
 ## Supabase login

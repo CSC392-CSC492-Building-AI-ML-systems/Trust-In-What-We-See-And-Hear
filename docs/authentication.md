@@ -435,7 +435,8 @@ The email is not part of the profile. If a page needs it, read it from Supabase:
 `(await supabase.auth.getUser()).data.user?.email`.
 
 **Onboarding form**: submit to `POST /api/v1/users/me/onboarding` through a server action using
-`apiFetch`, then redirect to `/dashboard` (or `/verify-identity`):
+`apiFetch`, then redirect to `/dashboard` (or `/verify-identity`; the verification endpoints and
+the page's flow are in `backend/app/modules/verification/README.md`):
 
 ```json
 {
