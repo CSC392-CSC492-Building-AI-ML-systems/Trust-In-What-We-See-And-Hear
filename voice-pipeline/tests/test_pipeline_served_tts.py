@@ -20,7 +20,7 @@ httpx = pytest.importorskip("httpx")
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 from pipeline.tts.served import (  # noqa: E402
-    RATE, DramaEngine, MingEngine, StreamResampler, audio_events, to_pcm16)
+    RATE, DramaEngine, MingEngine, StreamResampler, audio_events, leveled, to_pcm16)
 
 
 def wav(seconds: float, rate: int) -> bytes:
@@ -165,6 +165,54 @@ def test_a_sentence_ends_after_a_second_of_silence(recording):
     pieces = list(engine.speak("Send it.", engine.prepare_voice(str(recording))))
     # The silence is not sent (give or take the 0.1 s chunk where the tone stops).
     assert seconds_of(pieces) == pytest.approx(1.0, abs=0.15)
+
+
+def test_quiet_speech_is_not_taken_for_silence(recording):
+    # On 2026-11-23 a quiet reference gave speech at -35 to -50 dBFS, and a
+    # -40 dBFS rule cut real words. Real silence from Drama is -70 or lower.
+    quiet = 0.004  # a -48 dBFS sine (-51 dBFS RMS)
+    engine = streaming(sse(tone(0.5), tone(2.0, level=quiet)), [])
+    pieces = list(engine.speak("Please, I need it now.", engine.prepare_voice(str(recording))))
+    assert seconds_of(pieces) == pytest.approx(2.5, abs=0.05)
+
+
+def test_silence_inside_a_long_chunk_still_ends_the_sentence(recording):
+    # Drama's later chunks run over a second: words and silence can share one.
+    engine = streaming(sse(tone(1.0), silence(5.0), chunk_seconds=1.5), [])
+    pieces = list(engine.speak("Send it.", engine.prepare_voice(str(recording))))
+    assert seconds_of(pieces) == pytest.approx(1.0, abs=0.06)
+
+
+def test_a_quiet_reference_is_brought_to_speaking_level():
+    rate = 24000
+    t = np.arange(rate * 3) / rate
+    speech = (np.sin(2 * np.pi * 200 * t) * 0.02 * (t % 1 < 0.7))  # -37 dBFS, with pauses
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate)
+        w.writeframes((speech * 32767).astype("<i2").tobytes())
+    out = np.frombuffer(to_pcm16(leveled(buf.getvalue())), dtype="<i2") / 32768
+    loud = out[(t % 1 < 0.7)[: len(out)]]
+    rms_db = 20 * np.log10(np.sqrt(np.mean(loud ** 2)))
+    assert rms_db == pytest.approx(-20, abs=1)
+    assert np.abs(out).max() < 10 ** (-1 / 20) + 1e-3  # no clipping
+
+
+def test_a_loud_reference_is_not_pushed_into_clipping():
+    rate = 24000
+    t = np.arange(rate * 2) / rate
+    speech = np.sin(2 * np.pi * 200 * t) * 0.99
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate)
+        w.writeframes((speech * 32767).astype("<i2").tobytes())
+    out = np.frombuffer(to_pcm16(leveled(buf.getvalue())), dtype="<i2") / 32768
+    assert np.abs(out).max() <= 10 ** (-1 / 20) + 1e-3
+
+
+def test_a_silent_reference_comes_back_silent(recording):
+    out = np.frombuffer(to_pcm16(leveled(recording.read_bytes())), dtype="<i2")
+    assert not out.any()
 
 
 def test_a_pause_inside_a_sentence_is_kept(recording):

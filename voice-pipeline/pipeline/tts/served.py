@@ -17,7 +17,9 @@ converted to 24 kHz, the rate the call protocol sends.
 Drama can keep going after the words end (silence, or noise, until its token
 limit). Each sentence is therefore stopped after a second of silence once
 speech has started, or at a length cap from its word count, whichever comes
-first.
+first. Drama copies the reference's loudness, so a quiet recording gives quiet
+speech: the reference is brought to a normal speaking level first, and only
+near-digital silence (below -60 dBFS, measured every 50 ms) counts as silence.
 
     MING_URL                  default http://127.0.0.1:8095
     DRAMA_URL                 default http://127.0.0.1:8091/v1/audio/speech
@@ -36,6 +38,7 @@ import itertools
 import json
 import logging
 import os
+import wave
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterator
@@ -73,6 +76,39 @@ def to_pcm16(wav: bytes, rate: int = RATE) -> bytes:
             steps = np.arange(0, len(audio), source_rate / rate)
             audio = np.interp(steps, np.arange(len(audio)), audio).astype(np.float32)
     return (np.clip(audio, -1.0, 1.0) * 32767).astype("<i2").tobytes()
+
+
+def frame_db(audio: np.ndarray, frame: int) -> np.ndarray:
+    """Loudness in dBFS of each whole `frame`-sample stretch of float audio."""
+    n = len(audio) // frame
+    if not n:
+        return np.zeros(0)
+    frames = audio[: n * frame].reshape(n, frame).astype(np.float64)
+    return 20 * np.log10(np.sqrt((frames * frames).mean(axis=1)) + 1e-9)
+
+
+def leveled(wav: bytes, target_db: float = -20.0, peak_db: float = -1.0) -> bytes:
+    """The recording as a 24 kHz WAV with its speech at about `target_db`.
+
+    Speech level is the median loudness of the 50 ms stretches that are within
+    30 dB of the loudest one, so pauses do not count. The gain is capped so the
+    loudest sample stays below `peak_db`. Silence comes back unchanged in level.
+    """
+    audio = pcm16_to_float(to_pcm16(wav))
+    db = frame_db(audio, RATE // 20)
+    out = audio
+    if len(db) and db.max() > -70:
+        speech = np.median(db[db > db.max() - 30])
+        peak = float(np.abs(audio).max())
+        gain = min(10 ** ((target_db - speech) / 20), 10 ** (peak_db / 20) / peak)
+        out = audio * gain
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(RATE)
+        w.writeframes(float_to_pcm16(out))
+    return buf.getvalue()
 
 
 class StreamResampler:
@@ -169,7 +205,8 @@ class DramaEngine(ServedEngine):
 
     FIRST_PIECE_SECONDS = 0.2  # the first piece of a sentence goes out this soon
     PIECE_SECONDS = 0.5  # later pieces are about this long
-    SILENT_RMS = 0.01  # quieter than this (about -40 dBFS) counts as silence
+    SILENT_DB = -60.0  # 50 ms stretches quieter than this count as silence
+    FRAME = RATE // 20  # 50 ms, the stretch the silence check looks at
 
     def __init__(self, url: str, transcribe: Callable[[str], str],
                  client: httpx.Client | None = None, timeout: float = 60.0,
@@ -182,10 +219,12 @@ class DramaEngine(ServedEngine):
         self.warmed = False
 
     def prepare_voice(self, wav_path: str) -> Reference:
-        """As for any served engine, and the first time, one throwaway sentence:
+        """As for any served engine, at a normal speaking level (Drama speaks as
+        loudly as the reference), and the first time, one throwaway sentence:
         vLLM-Omni's first request takes about 10 s, and this way it is spent
         before the call says ready, not in the caller's first line."""
         voice = super().prepare_voice(wav_path)
+        voice = Reference(leveled(voice.wav), voice.text)  # Drama copies the level
         if not self.warmed:
             try:
                 for _ in self.speak("Hello, can you hear me?", voice):
@@ -224,31 +263,43 @@ class DramaEngine(ServedEngine):
             yield from self.pieces(audio_events(response.iter_lines()), text)
 
     def pieces(self, chunks: Iterator[tuple[bytes, int]], text: str) -> Iterator[Piece]:
-        """Streamed PCM chunks in, protocol-rate pieces out, stopped at the end of speech."""
+        """Streamed PCM chunks in, protocol-rate pieces out, stopped at the end of speech.
+
+        Silence is judged every 50 ms, not per chunk: Drama's chunks grow to
+        over a second, and one can hold the last words and the silence after.
+        """
         limit = self.max_seconds(text)
         resampler = None
         ready = np.zeros(0, dtype=np.float32)  # converted audio not sent yet
         held = np.zeros(0, dtype=np.float32)  # silence after speech, sent only if speech resumes
+        rest = np.zeros(0, dtype=np.float32)  # under 50 ms not judged yet
         spoken = 0.0
         heard_speech = False
         first = True
+        ended = False
         for pcm, source_rate in chunks:
             if resampler is None:
                 resampler = StreamResampler(source_rate)
             audio = resampler.feed(pcm16_to_float(pcm))
             if not len(audio):
                 continue
-            seconds = len(audio) / RATE
-            quiet = float(np.sqrt(np.mean(audio * audio))) < self.SILENT_RMS
-            if quiet and heard_speech:
-                held = np.concatenate([held, audio])
-                if len(held) / RATE >= self.stop_silence:
-                    break  # the words are over; the rest would be silence or noise
-            else:
-                heard_speech = heard_speech or not quiet
-                ready = np.concatenate([ready, held, audio])
-                held = np.zeros(0, dtype=np.float32)
-            spoken += seconds
+            spoken += len(audio) / RATE
+            audio = np.concatenate([rest, audio])
+            whole = len(audio) // self.FRAME * self.FRAME
+            rest = audio[whole:]
+            for k, db in enumerate(frame_db(audio[:whole], self.FRAME)):
+                frame = audio[k * self.FRAME:(k + 1) * self.FRAME]
+                if db < self.SILENT_DB and heard_speech:
+                    held = np.concatenate([held, frame])
+                    if len(held) / RATE >= self.stop_silence:
+                        ended = True  # the words are over; the rest would be silence or noise
+                        break
+                else:
+                    heard_speech = heard_speech or db >= self.SILENT_DB
+                    ready = np.concatenate([ready, held, frame])
+                    held = np.zeros(0, dtype=np.float32)
+            if ended:
+                break
             if spoken >= limit:
                 log.warning("drama: sentence of %d words cut at %.1f s", len(text.split()), spoken)
                 break
@@ -257,6 +308,8 @@ class DramaEngine(ServedEngine):
                 yield Piece(float_to_pcm16(ready), RATE)
                 ready = np.zeros(0, dtype=np.float32)
                 first = False
+        if not ended and not len(held):
+            ready = np.concatenate([ready, rest])
         if len(ready):
             yield Piece(float_to_pcm16(ready), RATE)
 
