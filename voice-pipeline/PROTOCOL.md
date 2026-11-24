@@ -14,8 +14,7 @@ ws://<host>/ws/calls/<call_id>?token=<token>
 ```
 
 - `POST /api/v1/calls` returns this whole address as `ws_url`, next to the
-  call's `id`. Connect to it as given. (Proposed in [BACKEND.md](BACKEND.md);
-  the backend endpoint is still a stub.)
+  call's `id`. Connect to it as given. (See [BACKEND.md](BACKEND.md), section 1.)
 - The token works once and expires if unused for 2 minutes. It goes in the
   query string because browsers cannot set headers on a WebSocket.
 - A missing or invalid token closes the socket with code `4401`.
@@ -134,9 +133,9 @@ until `status` is `completed` or `failed`, which takes a few seconds.
 
 The mock serves this endpoint itself with canned results, so the result
 screen can be built now. The real pipeline scores the call with its LLM, and
-the backend will serve what it stores. The fields are the
-ones in the database's `call_results` table (proposed in
-[BACKEND.md](BACKEND.md)):
+the backend serves what it stores. The fields are the
+ones in the database's `call_results` table (see
+[BACKEND.md](BACKEND.md), section 4):
 
 ```json
 {

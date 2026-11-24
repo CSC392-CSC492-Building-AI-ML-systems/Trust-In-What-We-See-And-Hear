@@ -9,7 +9,8 @@ friend's cloned voice, with the friend's consent. Three parts:
   score). It needs a large GPU, so it runs on a rented one.
 
 `frontend/tiwwsah_webapp/AGENTS.md` and `voice-pipeline/AGENTS.md` have
-rules for working in those folders.
+rules for working in those folders. Each folder also has a one-line
+`CLAUDE.md` that imports its `AGENTS.md`, so Claude Code loads it there.
 
 ## Where the answers are
 
@@ -33,8 +34,10 @@ talk to each other are answered in them.
 ## Building without a GPU
 
 The mock pipeline speaks the same WebSocket protocol with no models (a tone
-for a voice, fixed lines, canned results). How to run it is under "Run the
-mock" in `voice-pipeline/README.md`. To try the real pipeline, rent a GPU
+for a voice, fixed lines, canned results). `npm run setup`, then `npm run dev`
+at the root runs the frontend, the backend and the mock together (see
+"Local development" in `README.md`). To run the mock on its own, see "Run
+the mock" in `voice-pipeline/README.md`. To try the real pipeline, rent a GPU
 with `voice-pipeline/dev/pod.py` (guide: `voice-pipeline/dev/POD.md`; it
 costs money by the hour).
 
