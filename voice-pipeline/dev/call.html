@@ -87,8 +87,10 @@ function send(msg) { ws.send(JSON.stringify(msg)); log('out', '-> ' + JSON.strin
 // Recording a voice to clone: raw microphone samples, saved as a WAV file.
 let voiceWav = null, rec = null;
 $('rec').onclick = async () => {
+  // The browser's noise suppression and gain control colour the voice, and the
+  // engine copies what it hears. The server sets the level instead.
   const stream = await navigator.mediaDevices.getUserMedia(
-    {audio: {echoCancellation: false, noiseSuppression: true, autoGainControl: true}});
+    {audio: {echoCancellation: false, noiseSuppression: false, autoGainControl: false}});
   const ctx = new AudioContext();
   await ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([WORKLET], {type: 'text/javascript'})));
   const source = ctx.createMediaStreamSource(stream);
