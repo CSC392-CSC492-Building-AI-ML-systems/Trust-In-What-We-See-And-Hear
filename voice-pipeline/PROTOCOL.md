@@ -157,7 +157,9 @@ ones in the database's `call_results` table (see
 
 - `status`: `queued` until the client connects, `in_progress` during the
   call and while it is being scored, then `completed`. `failed` means there
-  will be no result. `summary` is `null` until `completed`.
+  will be no result, and `failure_reason` says why (`timed_out`, `error`,
+  `not_scored` or `voice_unavailable`). `summary` is `null` until
+  `completed`.
 - `outcome`: `recognized_scam`, `partially_complied`, `fully_complied`, or
   `inconclusive` (the call was too short to judge).
 - `score`: 0 to 100, higher means the user handled the call better. It is

@@ -26,7 +26,7 @@ talk to each other are answered in them.
 | Audio formats for the microphone and the caller | `voice-pipeline/PROTOCOL.md`, "Audio formats" |
 | The score and feedback after a call | `voice-pipeline/PROTOCOL.md`, "Call results" |
 | How the backend and the pipeline talk (claim and result) | `voice-pipeline/BACKEND.md`, sections 2 and 3 |
-| Voice recording limits (length, size, loudness, formats) | `backend/app/core/config.py` (`voice_sample_*`) and the voice upload route in `/docs` |
+| Voice recording limits (length, size, loudness, formats) | `voice_sample_*` in `backend/app/core/config.py`, `SUPPORTED_FORMATS` in `backend/app/modules/voices/audio.py`, and the voice upload route in `/docs` |
 | Tables, row level security, retention, which endpoint uses which table | `supabase/database-schema.md` |
 | Sign-in on the frontend and token checks on the backend | `docs/authentication.md` |
 | Migrations and changing the schema | `supabase/README.md` |
