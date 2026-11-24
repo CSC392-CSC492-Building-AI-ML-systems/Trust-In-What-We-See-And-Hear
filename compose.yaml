@@ -83,6 +83,19 @@ services:
         - action: sync
           path: ./voice-pipeline
           target: /pipeline
+          # As voice-pipeline/.dockerignore: the build context is ./backend, so Compose does not
+          # apply that file here.
+          ignore:
+            - .venv/
+            - venv/
+            - .env
+            - .env.*
+            - "**/__pycache__/"
+            - .pytest_cache/
+            - "**/*.wav"
+            - "**/*.mp3"
+            - "**/*.m4a"
+            - "**/*.flac"
         - action: rebuild
           path: ./backend/pyproject.toml
         - action: rebuild

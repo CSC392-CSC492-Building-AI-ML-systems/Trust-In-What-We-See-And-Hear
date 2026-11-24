@@ -127,7 +127,9 @@ That pod is not connected to your local backend: it uses its own test page and t
 
 Running the real pipeline against the local stack is not scripted. The frontend cannot make a call
 yet, so there is nothing to drive it with end to end. When that changes, a pipeline on the same
-machine can use the local backend: it accepts the local Supabase's `http://127.0.0.1` voice links,
+machine can use a backend run natively (`uv run fastapi dev` in `backend`): it accepts the local
+Supabase's `http://127.0.0.1` voice links (in Docker the backend signs them with a container
+hostname instead),
 and the backend's pipeline secret here is `local-dev-pipeline-secret` (see
 [voice-pipeline/BACKEND.md](voice-pipeline/BACKEND.md)). `npm run dev` always points the backend at
 the mock, so it would need to be started another way.
@@ -178,5 +180,9 @@ the frontend at the new backend port. A frontend you start on its own reads the 
 - **"Could not apply the database migrations"** after switching branches: your local database has
   migrations this branch does not. Starting carries on anyway. Run `npm run supabase db reset` to
   rebuild the database for the current branch.
+- **Every API call fails with 401, or the demo accounts do not exist**: `backend/.env` or
+  `frontend/tiwwsah_webapp/.env.local` points at another Supabase project, often the hosted one
+  from before `npm run setup` existed. `npm run dev` warns about this when it starts. Delete the
+  file and run `npm run setup` again.
 - **"Docker is not running"**: start Docker Desktop, or the Docker daemon on Linux, and run the
   command again.

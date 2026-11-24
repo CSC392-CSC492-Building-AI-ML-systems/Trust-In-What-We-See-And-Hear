@@ -63,8 +63,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         BodySizeLimitMiddleware, max_bytes=settings.voice_sample_max_bytes + 64 * 1024
     )
     # The frontend calls the API from another origin with a bearer token (not cookies), so
-    # credentials stay off. Added last so it is outermost and its headers are on every response,
-    # including the body limit's 413.
+    # credentials stay off. Added last so it is outermost of our middleware and its headers are on
+    # every handled response, including the body limit's 413. Not on an unhandled exception's 500:
+    # Starlette's ServerErrorMiddleware sits outside it, so the browser reports a CORS error.
     application.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_allow_origins,

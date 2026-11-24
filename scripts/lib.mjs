@@ -52,7 +52,8 @@ export function loadRootEnv() {
   if (!existsSync(file)) return;
   const values = parseEnv(readFileSync(file, "utf8"));
   for (const name of ["BACKEND_PORT", "PIPELINE_PORT"]) {
-    if (values[name] !== undefined) process.env[name] ??= values[name];
+    // An empty shell variable counts as unset, as it does in port().
+    if (values[name] !== undefined && !process.env[name]) process.env[name] = values[name];
   }
 }
 
