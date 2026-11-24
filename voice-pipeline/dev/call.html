@@ -33,11 +33,18 @@
 <p><small>Follows PROTOCOL.md. Use headphones, or the caller can hear itself.</small></p>
 
 <h2>1. Record your voice (optional)</h2>
-<p><small>The caller will speak in this voice. Record 10 to 20 seconds of normal
-speech, for example: "Hi, it's me. I'm just walking home from work and thought
-I'd call. Anyway, how has your week been? Mine has been busy but good."
-Without a recording the caller uses the pod's default voice. The recording is
-deleted from the server when the call ends.</small></p>
+<p><small>The caller will speak in this voice. Record 20 to 30 seconds of normal
+speech, in a quiet room, talking the way you would on the phone. A short
+recording gives a weaker likeness. You can read this, which takes about 30
+seconds:</small></p>
+<blockquote><small>"Hi, it's me. I'm just walking home from work and thought I'd
+give you a call. It's been such a long week. On Monday my phone stopped
+working, so I had to borrow my roommate's for a couple of days, and then on
+Wednesday I missed the bus and had to walk the whole way in the rain. Anyway,
+enough about me. How have you been? Are you still coming over on Saturday?
+Let me know, and say hi to everyone for me."</small></blockquote>
+<p><small>Without a recording the caller uses the pod's default voice. The
+recording is deleted from the server when the call ends.</small></p>
 <button id="rec">Record</button>
 <button id="recstop" disabled>Stop</button>
 <span id="recstate">No recording: the default voice is used.</span>
@@ -106,9 +113,9 @@ $('recstop').onclick = () => {
   const seconds = (Date.now() - started) / 1000;
   // Call stays off while a call is going on.
   $('rec').disabled = false; $('recstop').disabled = true; $('call').disabled = ws !== null;
-  if (seconds < 6) {
+  if (seconds < 15) {
     ctx.close();
-    $('recstate').textContent = 'Too short: record at least 6 seconds.';
+    $('recstate').textContent = 'Too short: record at least 15 seconds (20 to 30 is best).';
     return;
   }
   voiceWav = toWav(chunks, ctx.sampleRate);
