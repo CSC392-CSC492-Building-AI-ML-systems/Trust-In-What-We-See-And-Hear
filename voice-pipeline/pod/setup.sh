@@ -35,15 +35,16 @@ case "$LLM_MODEL" in
   *30B*|*32B*) NEED_GB=$((NEED_GB * 10 / 3)) ;;
 esac
 # The voice engine needs the rest: about 8 GB with speech to text, or about
-# 48 GB for Fish Audio Drama 3, which runs as its own server.
+# 53 GB for Fish Audio Drama 3 (45 + 5, plus speech to text), its own server.
 SPEECH_GB=8
-[ "${TTS_ENGINE:-}" = drama ] && SPEECH_GB=48
+[ "${TTS_ENGINE:-}" = drama ] && SPEECH_GB=53
 if [ $((GPU_GB - NEED_GB)) -lt $SPEECH_GB ]; then
   echo "$LLM_MODEL needs about $NEED_GB GB and the voice about $SPEECH_GB GB: more than this ${GPU_GB} GB GPU has."
   echo "Use a smaller model, or a GPU with more memory."
   exit 1
 fi
-export DRAMA_UTIL=$(python3 -c "print(round(44 / $GPU_GB, 2))")
+export DRAMA_UTIL=$(python3 -c "print(round(45 / $GPU_GB, 2))")  # Drama's model stage
+export DRAMA_CODEC_UTIL=$(python3 -c "print(round(5 / $GPU_GB, 2))")  # its codec stage
 # Always a current uv, in ~/.local/bin (first on PATH). The image ships an
 # old one that rejected newer CUDA builds on 2026-11-17.
 curl -LsSf https://astral.sh/uv/install.sh | sh
