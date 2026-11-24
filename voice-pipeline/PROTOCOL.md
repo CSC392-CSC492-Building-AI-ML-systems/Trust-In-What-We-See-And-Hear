@@ -14,8 +14,7 @@ ws://<host>/ws/calls/<call_id>?token=<token>
 ```
 
 - `POST /api/v1/calls` returns this whole address as `ws_url`, next to the
-  call's `id`. Connect to it as given. (Proposed in [BACKEND.md](BACKEND.md);
-  the backend endpoint is still a stub.)
+  call's `id`. Connect to it as given. (See [BACKEND.md](BACKEND.md), section 1.)
 - The token works once and expires if unused for 2 minutes. It goes in the
   query string because browsers cannot set headers on a WebSocket.
 - A missing or invalid token closes the socket with code `4401`.
@@ -134,9 +133,9 @@ until `status` is `completed` or `failed`, which takes a few seconds.
 
 The mock serves this endpoint itself with canned results, so the result
 screen can be built now. The real pipeline scores the call with its LLM, and
-the backend will serve what it stores. The fields are the
-ones in the database's `call_results` table (proposed in
-[BACKEND.md](BACKEND.md)):
+the backend serves what it stores. The fields are the
+ones in the database's `call_results` table (see
+[BACKEND.md](BACKEND.md), section 4):
 
 ```json
 {
@@ -158,7 +157,9 @@ ones in the database's `call_results` table (proposed in
 
 - `status`: `queued` until the client connects, `in_progress` during the
   call and while it is being scored, then `completed`. `failed` means there
-  will be no result. `summary` is `null` until `completed`.
+  will be no result, and `failure_reason` says why (`timed_out`, `error`,
+  `not_scored` or `voice_unavailable`). `summary` is `null` until
+  `completed`.
 - `outcome`: `recognized_scam`, `partially_complied`, `fully_complied`, or
   `inconclusive` (the call was too short to judge).
 - `score`: 0 to 100, higher means the user handled the call better. It is
@@ -173,8 +174,6 @@ backend's other fields (`consent_id`, `scenario_id`).
 
 ## Not decided yet
 
-- The backend has not agreed to BACKEND.md yet, so `ws_url` and the result
-  fields can still change.
 - Whether caller audio moves from WAV-per-message to raw binary PCM later
   (smaller, and playback can start sooner).
 - Interruption.

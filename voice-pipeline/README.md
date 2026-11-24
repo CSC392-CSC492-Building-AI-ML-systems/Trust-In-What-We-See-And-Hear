@@ -5,7 +5,7 @@ It runs separately from the backend API because it needs a GPU.
 
 - [PROTOCOL.md](PROTOCOL.md): the call WebSocket, message by message.
 - [BACKEND.md](BACKEND.md): what the pipeline needs from the backend to start
-  a call and hand back its result (a proposal).
+  a call and hand back its result.
 - `mock_server.py`: implements the protocol with no GPU and no models.
 - `pipeline/`: the real server. Same WebSocket, real models.
 
@@ -94,8 +94,8 @@ Run like that, every call uses that one token, that one voice recording and
 the backend's sample call context, and its result can be read from
 `GET /api/v1/calls/<id>?token=...` on the same server. With `PIPELINE_BACKEND_URL` and
 `PIPELINE_BACKEND_SECRET` set instead, each call is checked with the backend
-(BACKEND.md), which does not have those endpoints yet. Other settings are
-environment variables, listed at the top of each module.
+(BACKEND.md). Other settings are environment variables, listed at the top
+of each module.
 
 ## GPU runs so far
 
