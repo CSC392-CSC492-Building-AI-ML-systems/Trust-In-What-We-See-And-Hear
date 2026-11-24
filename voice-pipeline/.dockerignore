@@ -1,0 +1,15 @@
+# For the mock pipeline image (backend/Dockerfile's `pipeline` stage, via compose.yaml). Keeps a
+# local environment for the real pipeline, caches and voice recordings out of the build context.
+# compose.yaml's watch ignores the same paths.
+#
+# AI-assisted code (written with Claude Code), cited per the CSC398 AI policy.
+.venv
+venv
+.env
+.env.*
+**/__pycache__
+.pytest_cache
+**/*.wav
+**/*.mp3
+**/*.m4a
+**/*.flac

@@ -1,0 +1,223 @@
+// Shared helpers for scripts/setup.mjs, scripts/dev.mjs, scripts/docker.mjs and scripts/test.mjs.
+//
+// Commands are spawned without a shell: npm and the Supabase CLI are run as Node scripts through
+// process.execPath, because Windows cannot spawn npm.cmd/npx.cmd directly, and a shell would make
+// quoting depend on the OS. Paths with spaces are passed as `cwd`, never interpolated.
+//
+// AI-assisted code (written with Claude Code), cited per the CSC398 AI policy.
+
+import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import net from "node:net";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { parseArgs, parseEnv } from "node:util";
+
+export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+export const FRONTEND_DIR = path.join(ROOT, "frontend", "tiwwsah_webapp");
+export const BACKEND_DIR = path.join(ROOT, "backend");
+export const PIPELINE_DIR = path.join(ROOT, "voice-pipeline");
+
+// The shared secret the local backend expects from the voice pipeline. Matches compose.yaml. The
+// mock never calls the backend, so for it the backend only needs a value to accept calls. A real
+// pipeline run against the local stack sends it as PIPELINE_BACKEND_SECRET (see the root README).
+// Local only: a public value like the Supabase CLI's default keys.
+export const LOCAL_PIPELINE_SECRET = "local-dev-pipeline-secret";
+
+const MIN_NODE = [22, 13];
+
+export function fail(message) {
+  console.error(`\n✖ ${message}`);
+  process.exit(1);
+}
+
+export function step(message) {
+  console.log(`\n▶ ${message}`);
+}
+
+export function checkNode() {
+  const [major, minor] = process.versions.node.split(".").map(Number);
+  if (major < MIN_NODE[0] || (major === MIN_NODE[0] && minor < MIN_NODE[1])) {
+    fail(`Node ${MIN_NODE.join(".")} or newer is required (found ${process.versions.node}).`);
+  }
+}
+
+/**
+ * Read the ports from the optional, gitignored root .env. Variables already set in the shell win.
+ * Nothing else is loaded, so stray settings there cannot reach the servers started from here.
+ */
+export function loadRootEnv() {
+  const file = path.join(ROOT, ".env");
+  if (!existsSync(file)) return;
+  const values = parseEnv(readFileSync(file, "utf8"));
+  for (const name of ["BACKEND_PORT", "PIPELINE_PORT"]) {
+    // An empty shell variable counts as unset, as it does in port().
+    if (values[name] !== undefined && !process.env[name]) process.env[name] = values[name];
+  }
+}
+
+/**
+ * The options `npm run setup|dev|docker -- ...` accept. Only --no-demo-data, which skips loading
+ * supabase/local-dev-data.sql (data loaded earlier stays until `supabase db reset`).
+ */
+export function parseOptions() {
+  try {
+    const { values } = parseArgs({ options: { "no-demo-data": { type: "boolean" } } });
+    return { demoData: !values["no-demo-data"] };
+  } catch (error) {
+    fail(`${error.message}\nThe only option is --no-demo-data, e.g. \`npm run dev -- --no-demo-data\`.`);
+  }
+}
+
+/** A port from the environment (or `fallback`), validated as 1-65535. */
+export function port(name, fallback) {
+  const value = process.env[name] || fallback;
+  const number = Number(value);
+  if (!/^\d+$/.test(value) || number < 1 || number > 65535) {
+    fail(`${name} must be a port number from 1 to 65535 (got "${value}").`);
+  }
+  return value;
+}
+
+/**
+ * Run a command to completion, streaming its output unless `capture` is set. Returns its output
+ * ("" when not captured). Exits the script if it fails, or returns null with `allowFailure`.
+ */
+export function run(command, args, { cwd = ROOT, env, capture = false, allowFailure = false } = {}) {
+  const result = spawnSync(command, args, {
+    cwd,
+    env: { ...process.env, ...env },
+    stdio: capture ? ["ignore", "pipe", "inherit"] : "inherit",
+    encoding: "utf8",
+  });
+  if (result.error?.code === "ENOENT") {
+    fail(`\`${path.basename(command)}\` was not found. Install it and make sure it is on PATH.`);
+  }
+  if (result.error) fail(`${command} failed: ${result.error.message}`);
+  if (result.status !== 0) {
+    // The Supabase CLI can report errors on stdout, which would otherwise be lost.
+    if (capture && result.stdout) process.stderr.write(result.stdout);
+    if (allowFailure) return null;
+    fail(`\`${[path.basename(command), ...args].join(" ")}\` exited with code ${result.status}.`);
+  }
+  // spawnSync gives null stdout when it is not captured; "" keeps null meaning failure.
+  return result.stdout ?? "";
+}
+
+/**
+ * Fail with a clear message if one of `ports` (name -> port) is taken, rather than leaving a server
+ * to die with an OS error such as WinError 10013 while the others run on.
+ */
+export async function checkPortsFree(ports) {
+  const entries = Object.entries(ports);
+  for (const [i, [name, value]] of entries.entries()) {
+    const other = entries.slice(i + 1).find(([, v]) => Number(v) === Number(value));
+    if (other) fail(`${name} and ${other[0]} are both port ${value}; give them different ports.`);
+  }
+  // Both checks are needed on Windows: a test bind there can succeed next to a server on 0.0.0.0,
+  // and a port in a reserved range (common with Hyper-V, WSL or Docker) refuses connections but
+  // cannot be bound.
+  const answers = (port, host) =>
+    new Promise((resolve) => {
+      const socket = net.connect({ port: Number(port), host, timeout: 1000 });
+      const done = (result) => {
+        socket.destroy();
+        resolve(result);
+      };
+      socket.once("connect", () => done(true));
+      socket.once("error", () => done(false));
+      socket.once("timeout", () => done(false));
+    });
+  const bindable = (port) =>
+    new Promise((resolve) => {
+      const server = net.createServer();
+      server.once("error", () => resolve(false));
+      server.listen({ port: Number(port), host: "127.0.0.1", exclusive: true }, () =>
+        server.close(() => resolve(true)),
+      );
+    });
+  for (const [name, value] of entries) {
+    if ((await answers(value, "127.0.0.1")) || (await answers(value, "::1")) || !(await bindable(value))) {
+      const fix =
+        name === "frontend"
+          ? "Stop whatever is using it (the frontend must run on 3000)."
+          : `Stop whatever is using it, or set ${name} in a root .env (see .env.example).`;
+      fail(
+        `Port ${value} is in use or reserved. ${fix} If it is \`npm run docker\`'s containers, run ` +
+          "`docker compose down`.",
+      );
+    }
+  }
+}
+
+/** Whether a program can be started, e.g. `has("uv", ["--version"])`. */
+export function has(command, args) {
+  const result = spawnSync(command, args, { stdio: "ignore" });
+  return !result.error && result.status === 0;
+}
+
+function npmCli() {
+  // Set by npm for `npm run ...`; points at npm's own JS entry point.
+  const cli = process.env.npm_execpath;
+  if (!cli || !cli.endsWith(".js")) {
+    fail("Run this through npm, e.g. `npm run setup` or `npm run dev`.");
+  }
+  return cli;
+}
+
+export function npm(args, options) {
+  return run(process.execPath, [npmCli(), ...args], options);
+}
+
+/** The pinned Supabase CLI from the root node_modules (installed by `npm run setup`). */
+export function supabaseCli() {
+  try {
+    return createRequire(path.join(ROOT, "package.json")).resolve("supabase/dist/supabase.js");
+  } catch {
+    fail("The Supabase CLI is not installed. Run `npm run setup` first.");
+  }
+}
+
+export function supabase(args, options) {
+  return run(process.execPath, [supabaseCli(), ...args], options);
+}
+
+/**
+ * Start the local stack, apply migrations it has not seen (e.g. after a pull) and restore the demo
+ * data unless `demoData` is false. `cli` runs the Supabase CLI. Migration or demo data problems
+ * only warn: a database that is ahead of this branch after switching branches is normal and should
+ * not block starting.
+ */
+export function prepareSupabase(cli, { showStartOutput = false, demoData = true } = {}) {
+  cli(["start"], { capture: !showStartOutput });
+  if (cli(["migration", "up", "--include-all"], { capture: true, allowFailure: true }) === null) {
+    console.warn(
+      "\n⚠ Could not apply the database migrations (see above). If you switched branches, " +
+        "`supabase db reset` rebuilds the local database from this branch.",
+    );
+  }
+  if (!demoData) return;
+  const load = ["db", "query", "--file", path.join("supabase", "local-dev-data.sql")];
+  if (cli(load, { capture: true, allowFailure: true }) === null) {
+    console.warn("\n⚠ Could not load the local demo data (see above).");
+  }
+}
+
+/** The running local stack's URL and keys, from `supabase status`. */
+export function supabaseStatus(cli) {
+  const status = JSON.parse(cli(["status", "--output", "json"], { capture: true }));
+  for (const key of ["API_URL", "PUBLISHABLE_KEY", "SECRET_KEY"]) {
+    if (!status[key]) fail(`\`supabase status\` did not report ${key}.`);
+  }
+  return status;
+}
+
+export function checkDocker() {
+  if (!has("docker", ["info"])) {
+    fail(
+      "Docker is not running (the local Supabase stack runs in Docker). " +
+        "Start Docker Desktop, or the Docker daemon, and try again.",
+    );
+  }
+}
