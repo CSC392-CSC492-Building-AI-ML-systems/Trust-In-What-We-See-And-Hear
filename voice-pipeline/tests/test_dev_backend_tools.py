@@ -131,6 +131,7 @@ def test_the_default_replies_are_in_the_microphone_format():
 def test_a_refused_call_is_an_error_not_a_traceback():
     # The pod accepts the WebSocket, then closes it with 4401 when the claim fails.
     import asyncio
+
     from websockets.asyncio.server import serve
 
     async def refuse(ws):

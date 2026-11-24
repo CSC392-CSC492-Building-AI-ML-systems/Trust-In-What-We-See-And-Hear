@@ -185,7 +185,7 @@ def main() -> None:
             indent=2))
         if result.get("status") != "completed":
             sys.exit(1)
-    except (CallError, httpx.HTTPError, OSError, asyncio.TimeoutError, WebSocketException) as e:
+    except (CallError, httpx.HTTPError, OSError, TimeoutError, WebSocketException) as e:
         sys.exit(f"Error: {e or type(e).__name__}")
 
 
