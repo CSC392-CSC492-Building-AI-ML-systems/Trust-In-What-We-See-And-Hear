@@ -6,7 +6,11 @@ The backend API for the project, built with FastAPI.
 
 ## Development
 
-Requires [uv](https://docs.astral.sh/uv/getting-started/installation/) and Python >= 3.14 (which uv can install),
+To run the whole stack (frontend, backend, mock voice pipeline and local Supabase), follow
+[Local development](../README.md#local-development) in the root README. Its `npm run setup`
+creates `backend/.env` for the local Supabase stack.
+
+To run only the backend, you need [uv](https://docs.astral.sh/uv/getting-started/installation/) and Python >= 3.14 (which uv can install),
 and [ffmpeg](https://ffmpeg.org/download.html) on `PATH` (or set `FFMPEG_PATH`) to decode uploaded voice
 samples (`winget install ffmpeg`, `brew install ffmpeg`, `apt install ffmpeg`). Without it, voice
 uploads return `503` and the voice tests are skipped.

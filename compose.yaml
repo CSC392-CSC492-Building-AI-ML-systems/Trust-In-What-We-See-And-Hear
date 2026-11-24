@@ -1,0 +1,108 @@
+# Dockerized dev environment: frontend, backend and mock voice pipeline. Supabase runs from the
+# Supabase CLI, which manages its own containers. See the root README ("Local development"):
+#
+#   npm run docker
+#
+# which starts Supabase with the pinned CLI, applies new migrations, loads the demo data and then
+# runs `docker compose up --build --watch --force-recreate` (Compose 2.25 or newer).
+#
+# Source is synced into the containers by Compose Watch (not bind mounts, whose file events are
+# unreliable on Windows and macOS), so the dev servers reload on save. Changing a dependency
+# manifest or lockfile rebuilds the image. --force-recreate starts from fresh containers, since a
+# reused one can still hold synced edits that were since undone on the host.
+#
+# Host ports can be changed in an optional root .env (see .env.example). They are published on
+# 127.0.0.1, not on every network interface.
+#
+# AI-assisted code (written with Claude Code), cited per the CSC398 AI policy.
+
+name: tiwwsah
+
+x-supabase-keys:
+  # `npm run docker` passes the running stack's keys. The fallbacks are the pinned Supabase CLI's
+  # default local keys, for running `docker compose up` directly. Local stack only, never production.
+  publishable: &publishable-key ${SUPABASE_PUBLISHABLE_KEY:-sb_publishable_ACJWlzQHlZjBrEguHvfOxg_3BJgxAaH}
+  secret: &secret-key ${SUPABASE_SECRET_KEY:-sb_secret_N7UND0UgjKTVK-Uodkm0Hg_xSvEMPvz}
+
+services:
+  frontend:
+    build: ./frontend/tiwwsah_webapp
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      # Read by the browser on the host, so these are host URLs.
+      NEXT_PUBLIC_SUPABASE_URL: http://127.0.0.1:54321
+      NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: *publishable-key
+      NEXT_PUBLIC_API_URL: http://localhost:${BACKEND_PORT:-8000}
+    develop:
+      watch:
+        - action: sync
+          path: ./frontend/tiwwsah_webapp
+          target: /app
+        - action: rebuild
+          path: ./frontend/tiwwsah_webapp/package.json
+        - action: rebuild
+          path: ./frontend/tiwwsah_webapp/package-lock.json
+
+  backend:
+    build:
+      context: ./backend
+      target: api
+    ports:
+      - "127.0.0.1:${BACKEND_PORT:-8000}:8000"
+    environment:
+      # The backend talks to Supabase over the CLI's Docker network, by container name.
+      SUPABASE_URL: http://supabase_kong_Trust-In-What-We-See-And-Hear:8000
+      SUPABASE_PUBLISHABLE_KEY: *publishable-key
+      SUPABASE_SECRET_KEY: *secret-key
+      # Handed to the browser in ws_url, so this is a host URL. The mock never uses the secret.
+      PIPELINE_WS_URL: ws://localhost:${PIPELINE_PORT:-8001}
+      PIPELINE_BACKEND_SECRET: local-dev-pipeline-secret
+    networks:
+      - supabase
+    develop:
+      watch:
+        - action: sync
+          path: ./backend
+          target: /app
+        - action: rebuild
+          path: ./backend/pyproject.toml
+        - action: rebuild
+          path: ./backend/uv.lock
+
+  pipeline:
+    build:
+      context: ./backend
+      target: pipeline
+      additional_contexts:
+        voice-pipeline: ./voice-pipeline
+    ports:
+      - "127.0.0.1:${PIPELINE_PORT:-8001}:8001"
+    develop:
+      watch:
+        - action: sync
+          path: ./voice-pipeline
+          target: /pipeline
+          # As voice-pipeline/.dockerignore: the build context is ./backend, so Compose does not
+          # apply that file here.
+          ignore:
+            - .venv/
+            - venv/
+            - .env
+            - .env.*
+            - "**/__pycache__/"
+            - .pytest_cache/
+            - "**/*.wav"
+            - "**/*.mp3"
+            - "**/*.m4a"
+            - "**/*.flac"
+        - action: rebuild
+          path: ./backend/pyproject.toml
+        - action: rebuild
+          path: ./backend/uv.lock
+
+networks:
+  # Created by `supabase start`; its name comes from project_id in supabase/config.toml.
+  supabase:
+    name: supabase_network_Trust-In-What-We-See-And-Hear
+    external: true
