@@ -92,7 +92,7 @@ OPENAPI_TAGS = [
     {
         "name": "Voice",
         "description": (
-            "The current user's voice reference sample. Chatterbox clones the "
+            "The current user's voice reference sample. The voice pipeline clones the "
             "voice from it for calls that friends start with the user's consent. "
             "Samples are stored privately and are never sent back to a client."
         ),

@@ -117,10 +117,12 @@ async def upload_voice_sample(
 ) -> VoiceResponse:
     """Upload the current user's voice reference sample, replacing any previous one.
 
-    The file is decoded and checked (length and loudness) before anything is
-    stored, and stored as mono WAV whatever format was uploaded. Chatterbox
-    clones from the sample directly, so the voice is `ready` as soon as it is
-    saved. A replaced sample, and anything derived from it, is deleted.
+    The file is decoded and tidied (silence at the ends cut, long pauses
+    shortened, at most 30 seconds kept, leveled), then checked (length and
+    loudness) before anything is stored. It is stored as mono WAV whatever
+    format was uploaded. The voice engines clone from the sample directly, so
+    the voice is `ready` as soon as it is saved. A replaced sample, and
+    anything derived from it, is deleted.
     """
     settings: Settings = request.app.state.settings
     if not owner_consent:
@@ -164,23 +166,26 @@ async def upload_voice_sample(
             "unsupported_audio",
             f"Upload {SUPPORTED_FORMATS} audio.",
         )
-    if info.duration_seconds < settings.voice_sample_min_seconds:
-        api_error(
-            status.HTTP_400_BAD_REQUEST,
-            "audio_too_short",
-            f"The recording must be at least {settings.voice_sample_min_seconds:g} seconds long.",
-        )
-    if info.duration_seconds > settings.voice_sample_max_seconds:
+    if info.recorded_seconds > settings.voice_sample_max_seconds:
         api_error(
             status.HTTP_400_BAD_REQUEST,
             "audio_too_long",
             f"The recording must be at most {settings.voice_sample_max_seconds:g} seconds long.",
         )
+    # Loudness before length: a silent recording tidies to nothing, which is
+    # better reported as silent than as short.
     if info.loudness_dbfs < settings.voice_sample_min_dbfs:
         api_error(
             status.HTTP_400_BAD_REQUEST,
             "audio_too_quiet",
             "The recording is silent or too quiet. Record again closer to the microphone.",
+        )
+    if info.duration_seconds < settings.voice_sample_min_seconds:
+        api_error(
+            status.HTTP_400_BAD_REQUEST,
+            "audio_too_short",
+            f"The recording needs at least {settings.voice_sample_min_seconds:g} seconds of "
+            "speech, not counting silence at the start and end or long pauses.",
         )
 
     existing = await _find_voice(supabase_db, user.user_id)

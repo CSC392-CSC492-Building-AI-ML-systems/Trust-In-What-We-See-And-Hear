@@ -28,9 +28,14 @@ from app.core import clock
 from app.integrations.supabase import SupabaseStorage, get_supabase_storage
 from app.modules.voices import audio as audio_module
 from app.modules.voices.audio import (
+    EARLIEST_CUT_SECONDS,
+    MAX_REFERENCE_SECONDS,
+    PEAK_LIMIT,
+    TARGET_DBFS,
     AudioDecoder,
     AudioProcessingUnavailableError,
     decode_blocking,
+    loudness_dbfs,
 )
 from supabase_mock import body, postgres_error, rows
 
@@ -75,6 +80,37 @@ def wav(
         audio.setframerate(rate)
         audio.writeframes(samples.tobytes())
     return buffer.getvalue()
+
+
+def wav_parts(*parts: tuple[float, float], rate: int = 8000) -> bytes:
+    """Tone and silence in turn: each part is (seconds, amplitude), 0 for silence."""
+    samples = array.array("h")
+    for seconds, amplitude in parts:
+        count = int(rate * seconds)
+        samples.extend(
+            round(amplitude * 32767 * math.sin(2 * math.pi * 440 * n / rate)) for n in range(count)
+        )
+    if sys.byteorder == "big":
+        samples.byteswap()
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(rate)
+        audio.writeframes(samples.tobytes())
+    return buffer.getvalue()
+
+
+def stored_pcm(data: bytes) -> bytes:
+    with wave.open(io.BytesIO(data), "rb") as audio:
+        return audio.readframes(audio.getnframes())
+
+
+def stored_samples(data: bytes) -> array.array:
+    samples = array.array("h", stored_pcm(data))
+    if sys.byteorder == "big":
+        samples.byteswap()
+    return samples
 
 
 def voice_row(**changes):
@@ -207,7 +243,8 @@ def read_wav(data):
 )
 def test_decode_converts_browser_recordings_to_mono_wav(name):
     decoded = decode((AUDIO / name).read_bytes())
-    assert decoded.duration_seconds == pytest.approx(7.0, abs=0.1)
+    assert decoded.recorded_seconds == pytest.approx(7.0, abs=0.1)
+    assert 3 < decoded.duration_seconds <= decoded.recorded_seconds
     assert -30 < decoded.loudness_dbfs < -10
     assert (decoded.extension, decoded.content_type) == ("wav", "audio/wav")
     assert read_wav(decoded.data) == (1, 2, 24000)
@@ -215,7 +252,7 @@ def test_decode_converts_browser_recordings_to_mono_wav(name):
 
 def test_decode_converts_wav():
     decoded = decode(wav(7, rate=44100))
-    assert decoded.duration_seconds == pytest.approx(7.0)
+    assert decoded.duration_seconds == decoded.recorded_seconds == pytest.approx(7.0)
     assert read_wav(decoded.data) == (1, 2, 24000)
 
 
@@ -239,12 +276,68 @@ def test_loudness_ignores_a_constant_offset():
     assert tone == pytest.approx(-43.0, abs=0.5)
 
 
-def test_loudness_covers_only_the_start_chatterbox_uses():
-    # Chatterbox conditions on at most the first 15 seconds.
-    late = decode(wav(36, silence_before=16))
-    assert late.loudness_dbfs == -math.inf
-    pause = decode(wav(20, silence_before=3))  # a short pause before speaking
-    assert pause.loudness_dbfs > -11
+# Tidying: the engines clone from the whole stored sample.
+
+
+def test_silence_at_the_ends_is_cut():
+    decoded = decode(wav_parts((3, 0), (12, 0.5), (4, 0)))
+    assert decoded.recorded_seconds == pytest.approx(19)
+    # 0.2 s is kept on each side for soft word edges.
+    assert decoded.duration_seconds == pytest.approx(12.4, abs=0.06)
+    assert decoded.loudness_dbfs > -11
+
+
+def test_speech_that_starts_late_is_measured_and_kept_whole():
+    # Loudness used to cover only the first 15 s, so this was rejected as silent.
+    decoded = decode(wav(36, silence_before=16))
+    assert decoded.loudness_dbfs > -11
+    assert decoded.duration_seconds == pytest.approx(20.2, abs=0.06)
+
+
+def test_long_pauses_are_shortened_and_short_ones_kept():
+    decoded = decode(wav_parts((5, 0.5), (0.8, 0), (5, 0.5), (4, 0), (5, 0.5)))
+    # The 0.8 s pause stays; the 4 s one becomes 0.5 s.
+    assert decoded.duration_seconds == pytest.approx(15 + 0.8 + 0.5, abs=0.11)
+
+
+def test_the_reference_is_capped_in_a_pause():
+    parts = [(9, 0.5), (0.6, 0)] * 5  # 48 s, with pauses at 9.6 s intervals
+    decoded = decode(wav_parts(*parts))
+    # The last pause before 30 s starts at 28.2 s; 0.2 s of it is kept.
+    assert EARLIEST_CUT_SECONDS <= decoded.duration_seconds <= MAX_REFERENCE_SECONDS
+    assert decoded.duration_seconds == pytest.approx(28.4, abs=0.06)
+
+
+def test_the_reference_is_capped_without_a_pause():
+    decoded = decode(wav(50))
+    assert decoded.duration_seconds == pytest.approx(MAX_REFERENCE_SECONDS)
+
+
+@pytest.mark.parametrize("amplitude", [0.9, 0.5, 0.02, 0.003])
+def test_the_reference_is_leveled(amplitude):
+    data = decode(wav(12, amplitude=amplitude)).data
+    # A sine's peak is 3 dB above its RMS, so -20 dBFS fits under -1 dBFS.
+    assert loudness_dbfs(stored_pcm(data)) == pytest.approx(TARGET_DBFS, abs=0.2)
+    assert max(abs(value) for value in stored_samples(data)) <= PEAK_LIMIT * 32767 + 1
+
+
+def test_leveling_never_clips_a_peaky_recording():
+    # Mostly quiet with one loud burst: raising it to -20 dBFS would clip the burst.
+    decoded = decode(wav_parts((10, 0.01), (0.1, 0.99), (2, 0.01)))
+    samples = stored_samples(decoded.data)
+    assert max(abs(value) for value in samples) <= PEAK_LIMIT * 32767 + 1
+
+
+def test_a_dc_offset_is_removed():
+    decoded = decode(wav(12, amplitude=0.2, offset=3000))
+    samples = stored_samples(decoded.data)
+    assert abs(sum(samples) / len(samples)) < 50
+
+
+def test_silence_tidies_to_nothing():
+    decoded = decode(wav(20, amplitude=0))
+    assert decoded.loudness_dbfs == -math.inf
+    assert decoded.duration_seconds == 0
 
 
 def test_decode_measures_the_audio_not_the_header():
@@ -255,7 +348,7 @@ def test_decode_measures_the_audio_not_the_header():
 
 def test_decode_stops_just_past_the_maximum():
     decoded = decode(wav(120), max_seconds=60)
-    assert 60 < decoded.duration_seconds <= 61
+    assert 60 < decoded.recorded_seconds <= 61
 
 
 def test_decode_drops_metadata():
@@ -755,13 +848,14 @@ def test_cleanup_failure_does_not_fail_the_upload(voice_client, db, storage):
     [
         ({"owner_consent": "false"}, 400, "owner_consent_required"),
         ({"data": wav(2)}, 400, "audio_too_short"),
-        # Chatterbox Turbo needs over 5 s; 15 s covers both Chatterbox variants.
-        ({"data": wav(14.9)}, 400, "audio_too_short"),
+        ({"data": wav(9.9)}, 400, "audio_too_short"),
+        # 30 s long, but only 8 s of it is speech.
+        ({"data": wav_parts((10, 0), (4, 0.5), (12, 0), (4, 0.5))}, 400, "audio_too_short"),
         ({"data": wav(61)}, 400, "audio_too_long"),
         ({"data": wav(20, amplitude=0)}, 400, "audio_too_quiet"),
         ({"data": wav(20, amplitude=0.001)}, 400, "audio_too_quiet"),  # about -63 dBFS
         ({"data": wav(20, amplitude=0, offset=1000)}, 400, "audio_too_quiet"),
-        ({"data": wav(36, silence_before=16)}, 400, "audio_too_quiet"),
+        ({"data": wav(36, silence_before=28)}, 400, "audio_too_short"),
         ({"data": b"definitely not audio" * 50}, 415, "unsupported_audio"),
         ({"data": wav(10)[:44]}, 415, "unsupported_audio"),
         ({"data": b""}, 415, "unsupported_audio"),
