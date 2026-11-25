@@ -62,13 +62,23 @@ def sign_in(supabase: str, key: str, email: str, password: str) -> str:
 
 
 def pick_consent(items: list[dict], wanted: str | None) -> dict:
-    """The consent to call with: the one asked for, else the first usable one."""
-    usable = [c for c in items if c.get("direction") == "outgoing" and c.get("status") == "accepted"]
+    """The consent to call with: the one asked for, else the first usable one.
+
+    `usable` comes from the backend: outgoing, accepted, unused, unexpired and
+    the friend's voice ready.
+    """
     if wanted:
-        usable = [c for c in usable if c["id"] == wanted]
+        found = [c for c in items if c["id"] == wanted]
+        if not found:
+            raise CallError(f"no consent with ID {wanted}")
+        if not found[0].get("usable"):
+            raise CallError(f"consent {wanted} can't start a call (it must be an accepted, unused "
+                            "consent from a friend whose voice is ready)")
+        return found[0]
+    usable = [c for c in items if c.get("usable")]
     if not usable:
-        raise CallError("no accepted consent from a friend to call with"
-                        + (f" with ID {wanted}" if wanted else ""))
+        raise CallError("no usable consent to call with: it needs a friend's accepted, unused "
+                        "consent, and the friend's voice uploaded and ready")
     return usable[0]
 
 
@@ -95,16 +105,19 @@ async def talk(ws_url: str, replies: list[bytes], save: Path | None, wait_ready:
         turn_audio: list[bytes] = []
         turns = 0
 
-        async def next_message(timeout: float) -> dict:
+        async def next_message(timeout: float, late: str = "") -> dict:
             try:
                 raw = await asyncio.wait_for(ws.recv(), timeout)
+            except TimeoutError:
+                raise CallError(f"the pod sent nothing for {timeout:.0f} s{late}") from None
             except ConnectionClosed as e:
                 code = e.rcvd.code if e.rcvd else None
                 raise CallError(REFUSED.get(code) or f"the pod closed the connection "
                                 f"(code {code}: {e.rcvd.reason if e.rcvd else 'none'})") from e
             return json.loads(raw)
 
-        message = await next_message(wait_ready)
+        message = await next_message(wait_ready, " while setting up the caller's voice (it may "
+                                     "still be loading: try again, or raise --wait-ready)")
         if message.get("type") != "ready":
             raise CallError(f"expected ready, got {message}")
         print(f"ready: the caller's voice is set up; calls are capped at "
@@ -186,7 +199,7 @@ def main() -> None:
         if result.get("status") != "completed":
             sys.exit(1)
     except (CallError, httpx.HTTPError, OSError, TimeoutError, WebSocketException) as e:
-        sys.exit(f"Error: {e or type(e).__name__}")
+        sys.exit(f"Error: {str(e) or type(e).__name__}")
 
 
 def backend_key() -> str:

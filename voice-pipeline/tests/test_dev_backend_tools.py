@@ -93,17 +93,21 @@ def test_the_tunnel_address_is_read_from_cloudflareds_output():
         tunnels.tunnel_address(iter(["ERR failed to request quick Tunnel"]))
 
 
-def consent(id, direction="outgoing", status="accepted"):
-    return {"id": id, "direction": direction, "status": status}
+def consent(id, usable=True):
+    return {"id": id, "usable": usable}
 
 
-def test_the_call_uses_an_accepted_outgoing_consent():
-    items = [consent("a", direction="incoming"), consent("b", status="pending"), consent("c"),
-             consent("d")]
-    assert backend_call.pick_consent(items, None)["id"] == "c"
-    assert backend_call.pick_consent(items, "d")["id"] == "d"
-    with pytest.raises(backend_call.CallError):
-        backend_call.pick_consent(items, "b")
+def test_the_call_uses_a_usable_consent():
+    # The list is soonest to expire first; "a" could be one whose friend's voice isn't ready.
+    items = [consent("a", usable=False), consent("b"), consent("c")]
+    assert backend_call.pick_consent(items, None)["id"] == "b"
+    assert backend_call.pick_consent(items, "c")["id"] == "c"
+    with pytest.raises(backend_call.CallError, match="can't start a call"):
+        backend_call.pick_consent(items, "a")
+    with pytest.raises(backend_call.CallError, match="no consent with ID"):
+        backend_call.pick_consent(items, "z")
+    with pytest.raises(backend_call.CallError, match="no usable consent"):
+        backend_call.pick_consent([consent("a", usable=False)], None)
 
 
 def write_wav(path, rate=16000, channels=1, width=2, seconds=0.1):
@@ -145,3 +149,20 @@ def test_a_refused_call_is_an_error_not_a_traceback():
     with pytest.raises(backend_call.CallError, match="refused the call's token"):
         asyncio.run(run())
 
+
+def test_a_pod_that_never_gets_ready_says_so():
+    # asyncio.wait_for raises a TimeoutError with no message, which used to print just "Error: ".
+    import asyncio
+
+    from websockets.asyncio.server import serve
+
+    async def silent(ws):
+        await asyncio.sleep(5)
+
+    async def run():
+        async with serve(silent, "127.0.0.1", 0) as server:
+            port = server.sockets[0].getsockname()[1]
+            await backend_call.talk(f"ws://127.0.0.1:{port}", [], None, 0.2)
+
+    with pytest.raises(backend_call.CallError, match="sent nothing for 0 s while setting up"):
+        asyncio.run(run())

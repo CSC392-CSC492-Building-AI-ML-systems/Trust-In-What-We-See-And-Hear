@@ -83,18 +83,24 @@ with `brew install cloudflared` or `winget install Cloudflare.cloudflared`).
 One goes to the backend. The other serves only the signed voice links from
 the local Supabase, not the rest of its API.
 
-1. Start the local Supabase and the backend (see the root README).
+1. Start the local Supabase (`npm run supabase start` at the repository
+   root) and run the backend natively with `uv run fastapi dev` in
+   `backend/`. Not `npm run dev` or `npm run docker`: they always point the
+   backend at the mock pipeline, whatever `backend/.env` says. Start the
+   frontend on its own (`npm run dev` in `frontend/tiwwsah_webapp`) if you
+   want to use the app.
 2. In a second window, leave this running:
    `python3 voice-pipeline/dev/tunnels.py`
    With the hosted Supabase, add `--no-supabase`.
 3. `python3 voice-pipeline/dev/pod.py start --backend <backend address it printed>`
-4. When the pod is ready, restart the backend with the three settings the
-   two scripts printed:
+4. When the pod is ready, set the three settings the two scripts printed in
+   `backend/.env` (`npm run setup` already wrote the first two with the
+   mock's values, so replace those), then restart the backend:
 
    | Setting | Value |
    |---|---|
    | `PIPELINE_WS_URL` | `wss://<pod id>-8001.proxy.runpod.net` |
-   | `PIPELINE_BACKEND_SECRET` | the contents of `~/.tiwwsah/pipeline-backend-secret.txt`, which `pod.py` makes the first time (or your own `PIPELINE_BACKEND_SECRET`, if you set one when starting the pod) |
+   | `PIPELINE_BACKEND_SECRET` | the secret `pod.py` names when the pod is ready: the contents of `~/.tiwwsah/pipeline-backend-secret.txt`, which it makes the first time, or your own `PIPELINE_BACKEND_SECRET`, if you set one when starting the pod |
    | `PIPELINE_SUPABASE_URL` | the voice-link address from `tunnels.py` (leave it out with `--no-supabase`) |
 
 5. Make a call. Until the app can, from `backend/`:
