@@ -123,16 +123,10 @@ result is at `GET http://localhost:8001/api/v1/calls/<call id>`.
 
 The real voice pipeline needs a large NVIDIA GPU, so neither option runs it. The team tests it on a
 rented GPU with `voice-pipeline/dev/pod.py` (see [voice-pipeline/dev/POD.md](voice-pipeline/dev/POD.md)).
-That pod is not connected to your local backend: it uses its own test page and token.
-
-Running the real pipeline against the local stack is not scripted. The frontend cannot make a call
-yet, so there is nothing to drive it with end to end. When that changes, a pipeline on the same
-machine can use a backend run natively (`uv run fastapi dev` in `backend`): it accepts the local
-Supabase's `http://127.0.0.1` voice links (in Docker the backend signs them with a container
-hostname instead),
-and the backend's pipeline secret here is `local-dev-pipeline-secret` (see
-[voice-pipeline/BACKEND.md](voice-pipeline/BACKEND.md)). `npm run dev` always points the backend at
-the mock, so it would need to be started another way.
+By default that pod uses its own test page and token. To connect it to your local backend instead,
+follow "With the backend" in POD.md: it tunnels the backend to the pod, and
+`npm run dev -- --pipeline` then starts the stack with no mock, using the pod's settings from
+`backend/.env`. `npm run docker` always uses the mock.
 
 ### Tests
 

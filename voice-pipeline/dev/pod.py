@@ -6,6 +6,8 @@ packages and no folders or SSH keys set up beforehand. Run it from the
 repository's top folder:
 
     python voice-pipeline/dev/pod.py start     rent a GPU and set everything up
+    python voice-pipeline/dev/pod.py start --backend https://...
+                                               the same, taking its calls from a backend
     python voice-pipeline/dev/pod.py status    is a pod running? its link, cost, progress
     python voice-pipeline/dev/pod.py logs      what the pod has been doing
     python voice-pipeline/dev/pod.py stop      terminate the pod (billing stops)
@@ -48,6 +50,8 @@ REPO = Path(__file__).resolve().parents[2]
 STATE = Path.home() / ".tiwwsah"
 KEY_FILE = STATE / "runpod-api-key.txt"
 SSH_KEY = STATE / "pod-ssh-key"  # made by this script; its public half goes to each pod it starts
+# The secret the pod and the backend share in backend mode (PIPELINE_BACKEND_SECRET).
+BACKEND_SECRET_FILE = STATE / "pipeline-backend-secret.txt"
 LOG_START = "---session-log---"  # separates the stage from the log in follow()
 LOG_MARK = "[voice-pipeline] "  # session.sh's lines in the pod's container log
 POD_NAME = "voice-pipeline-test"  # every pod this script makes has this name
@@ -293,6 +297,36 @@ def load_key(new_key: bool) -> str:
 
 # ---------------------------------------------------------------- choosing a GPU
 
+def backend_secret() -> str:
+    """The shared secret for backend mode: from the environment, else a file made once."""
+    secret = os.environ.get("PIPELINE_BACKEND_SECRET", "").strip()
+    if secret:
+        return secret
+    if BACKEND_SECRET_FILE.is_file():
+        secret = BACKEND_SECRET_FILE.read_text().strip()
+        if secret:
+            return secret
+    STATE.mkdir(parents=True, exist_ok=True)
+    secret = secrets.token_urlsafe(32)
+    BACKEND_SECRET_FILE.write_text(secret + "\n")
+    try:
+        BACKEND_SECRET_FILE.chmod(0o600)
+    except OSError:
+        pass  # on Windows the home folder is private already
+    return secret
+
+
+def check_backend_url(url: str) -> str:
+    """The backend's address as the pod will use it. The pod is on RunPod's
+    network, so this must be a public https address (a tunnel or a deployed backend)."""
+    url = url.strip().rstrip("/")
+    if not url.startswith("https://"):
+        raise PodError(f"--backend must be the backend's public https address, not {url!r}. The pod "
+                       "cannot reach your computer's localhost: start a tunnel with "
+                       "python voice-pipeline/dev/tunnels.py and use the backend address it prints.")
+    return url
+
+
 def candidates(api: RunPod, need_gb: int, max_price: float, community: bool) -> list[dict]:
     """GPU types that fit, those in stock first, then by price."""
     rank = {"HIGH": 0, "MEDIUM": 1, "LOW": 2, "NONE": 3}
@@ -359,7 +393,7 @@ def upload(remote: Remote, data: bytes, target: str) -> None:
         raise PodError("The upload to the pod came out damaged. Run start again.")
 
 
-def create_pod(api: RunPod, args: argparse.Namespace, token: str,
+def create_pod(api: RunPod, args: argparse.Namespace, calls_env: dict,
                public_key: str) -> tuple[dict, dict]:
     need_gb, disk = ENGINES[args.engine]
     options = candidates(api, need_gb, args.max_price, args.community)
@@ -386,8 +420,7 @@ def create_pod(api: RunPod, args: argparse.Namespace, token: str,
     if not args.yes and not ask_yes("Start a pod?"):
         raise PodError("Nothing was started.")
 
-    env = {"PIPELINE_DEV_TOKEN": token, "TTS_ENGINE": args.engine,
-           "IDLE_MINUTES": str(args.idle_minutes)}
+    env = {**calls_env, "TTS_ENGINE": args.engine, "IDLE_MINUTES": str(args.idle_minutes)}
     shared = env
     for gpu in options:
         env = dict(shared)
@@ -507,22 +540,43 @@ def call_link(pod_id: str, token: str) -> str:
     return f"https://{pod_id}-8001.proxy.runpod.net/?token={token}"
 
 
-def show_ready(pod: dict, token: str) -> None:
+def backend_settings(pod_id: str) -> list[str]:
+    """What the backend needs to send its calls to this pod."""
+    return [f"PIPELINE_WS_URL=wss://{pod_id}-8001.proxy.runpod.net",
+            f"PIPELINE_BACKEND_SECRET=<{secret_source()}>"]
+
+
+def secret_source() -> str:
+    """Where backend_secret() takes the secret from, for the hints."""
+    if os.environ.get("PIPELINE_BACKEND_SECRET", "").strip():
+        return "the PIPELINE_BACKEND_SECRET set in your environment"
+    return f"the secret in {BACKEND_SECRET_FILE}"
+
+
+def show_ready(pod: dict, env: dict) -> None:
     say()
     say("=" * 70)
-    say("The voice pipeline is running. Make a call here:")
-    say()
-    say(f"  {call_link(pod['id'], token)}")
-    say()
+    if env.get("PIPELINE_BACKEND_URL"):
+        say(f"The voice pipeline is running. It takes its calls from {env['PIPELINE_BACKEND_URL']}.")
+        say("Set these for the backend and restart it:")
+        say()
+        for line in backend_settings(pod["id"]):
+            say(f"  {line}")
+        say()
+        say("  Then start a call from the app, or with voice-pipeline/dev/backend_call.py.")
+    else:
+        say("The voice pipeline is running. Make a call here:")
+        say()
+        say(f"  {call_link(pod['id'], env['PIPELINE_DEV_TOKEN'])}")
+        say()
+        say("  Use headphones. Share these links only with the team: anyone with them can call.")
+        say("  The links can answer 404 for the first minute.")
     say(f"  Pod: {pod['id']}   cost: ${float(pod.get('cost') or 0):.2f}/h")
-    say("  Use headphones. Share these links only with the team: anyone with them can call.")
-    say("  The links can answer 404 for the first minute.")
     say("  When you are done: python voice-pipeline/dev/pod.py stop")
     say("=" * 70)
 
 
-def cmd_start(api: RunPod, args: argparse.Namespace) -> None:
-    voice = Path(args.voice)
+def check_voice(voice: Path) -> Path:
     if not voice.is_file():
         raise PodError(f"{voice} does not exist.")
     if voice.read_bytes()[:4] != b"RIFF":
@@ -532,6 +586,39 @@ def cmd_start(api: RunPod, args: argparse.Namespace) -> None:
             f'  macOS:   afconvert -f WAVE -d LEI16@24000 -c 1 "{voice}" voice.wav\n'
             f'  Windows: ffmpeg -i "{voice}" -ar 24000 -ac 1 voice.wav   (ffmpeg: winget install ffmpeg)\n'
             "Or record in Audacity and use File, Export, Export as WAV.")
+    return voice
+
+
+def check_backend(url: str) -> None:
+    """The backend answers on the address the pod will use (checked from here)."""
+    try:
+        request = urllib.request.Request(f"{url}/health",
+                                         headers={"User-Agent": "voice-pipeline-pod-script"})
+        with urllib.request.urlopen(request, timeout=15) as response:
+            status = response.status
+    except urllib.error.HTTPError as e:
+        status = e.code
+    except Exception as e:
+        raise PodError(f"The backend at {url} did not answer ({e}). Is it running, and is the "
+                       "tunnel up?") from None
+    if status != 200:
+        raise PodError(f"The backend at {url} answered {status} on /health. Is that the backend's "
+                       "address?")
+
+
+def cmd_start(api: RunPod, args: argparse.Namespace) -> None:
+    backend = check_backend_url(args.backend) if args.backend else None
+    if backend is None and not args.voice:
+        raise PodError("Give --voice (a WAV of the voice to clone), or --backend to take calls "
+                       "and voices from a backend.")
+    voice = None
+    if backend is not None:
+        if args.voice:
+            say("Note: --voice is not used with --backend; each call uses the persona's voice "
+                "from the backend.")
+        check_backend(backend)
+    else:
+        voice = check_voice(Path(args.voice))
     pods = [p for p in api.our_pods() if p.get("status") != "TERMINATED"]
     stopped = [p for p in pods if p.get("status") == "EXITED"]
     existing = [p for p in pods if p.get("status") not in GONE]
@@ -551,8 +638,11 @@ def cmd_start(api: RunPod, args: argparse.Namespace) -> None:
 
     key = ssh_key()
     public_key = key.with_name(key.name + ".pub").read_text().strip()
-    token = secrets.token_urlsafe(12)
-    pod, env = create_pod(api, args, token, public_key)
+    if backend is not None:
+        calls_env = {"PIPELINE_BACKEND_URL": backend, "PIPELINE_BACKEND_SECRET": backend_secret()}
+    else:
+        calls_env = {"PIPELINE_DEV_TOKEN": secrets.token_urlsafe(12)}
+    pod, env = create_pod(api, args, calls_env, public_key)
     pod_id = pod["id"]
     # From here until the setup starts, any failure offers to remove the pod.
     try:
@@ -571,8 +661,9 @@ def cmd_start(api: RunPod, args: argparse.Namespace) -> None:
         remote.run("mkdir -p /root/app")
         upload(remote, make_archive(), "/root/app.tar.gz")
         remote.run("tar -xzf /root/app.tar.gz -C /root/app && rm /root/app.tar.gz")
-        say(f"Uploading the voice recording {voice.name}...")
-        upload(remote, voice.read_bytes(), "/root/voice.wav")
+        if voice is not None:
+            say(f"Uploading the voice recording {voice.name}...")
+            upload(remote, voice.read_bytes(), "/root/voice.wav")
         say("Starting the setup on the pod. It takes 5 to 25 minutes, depending on the machine;")
         say("progress is shown below. You can close this window at any time: the setup")
         say("carries on, and `status` shows where it is.")
@@ -600,7 +691,7 @@ def cmd_start(api: RunPod, args: argparse.Namespace) -> None:
         say("  python voice-pipeline/dev/pod.py stop     terminates it")
         return
     if stage == "ready":
-        show_ready(api.pod(pod_id) or pod, token)
+        show_ready(api.pod(pod_id) or pod, env)
     else:
         say()
         say("The setup failed; the reason is above.")
@@ -636,7 +727,11 @@ def show_pod(api: RunPod, pod: dict) -> None:
     token = env.get("PIPELINE_DEV_TOKEN")
     if server_ready(pod["id"]):
         say("  setup: ready")
-        if token:
+        if env.get("PIPELINE_BACKEND_URL"):
+            say(f"  takes its calls from {env['PIPELINE_BACKEND_URL']}. The backend needs:")
+            for line in backend_settings(pod["id"]):
+                say(f"    {line}")
+        elif token:
             say(f"  make a call: {call_link(pod['id'], token)}")
         return
     lines = api.log_lines(pod["id"])
@@ -713,10 +808,12 @@ def main() -> None:
     start = sub.add_parser("start", help="rent a GPU and set up the voice pipeline on it")
     start.add_argument("--engine", choices=sorted(ENGINES), default="ming",
                        help="voice engine (default ming; drama needs an 80 GB GPU)")
-    # Until this script can start the pod with the backend, it has no other
-    # way to get the voice: the app's recordings live in the backend's storage.
-    start.add_argument("--voice", required=True,
-                       help="WAV recording of the voice to clone, at least 5 seconds (required)")
+    start.add_argument("--voice",
+                       help="WAV recording of the voice to clone, at least 5 seconds "
+                            "(needed unless --backend is given)")
+    start.add_argument("--backend", metavar="URL",
+                       help="take calls from the backend at this public https address instead of "
+                            "from the test page; each call uses the persona's voice from it")
     start.add_argument("--llm", help=f"LLM to serve (default {LLM_FOR_CARD})")
     start.add_argument("--max-price", type=float, default=2.5,
                        help="highest price per hour to accept, in USD (default 2.50)")

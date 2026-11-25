@@ -5,6 +5,10 @@
 // together with prefixed output. Ctrl+C stops all three; Supabase keeps running
 // (`npm run supabase stop` stops it).
 //
+// `npm run dev -- --pipeline` uses a real pipeline instead of the mock: it starts no mock and lets
+// the backend take PIPELINE_WS_URL, PIPELINE_BACKEND_SECRET and PIPELINE_SUPABASE_URL from
+// backend/.env, as voice-pipeline/dev/POD.md ("With the backend") sets them for a RunPod pod.
+//
 // Ports come from the environment or the optional root .env: BACKEND_PORT (default 8000) and
 // PIPELINE_PORT (default 8001). The frontend always uses 3000: backend CORS and the Supabase auth
 // redirect URLs expect it.
@@ -32,7 +36,7 @@ import {
 } from "./lib.mjs";
 
 checkNode();
-const { demoData } = parseOptions();
+const { demoData, pipeline } = parseOptions({ pipeline: true });
 loadRootEnv();
 const backendPort = port("BACKEND_PORT", "8000");
 const pipelinePort = port("PIPELINE_PORT", "8001");
@@ -45,7 +49,9 @@ for (const required of [
 ]) {
   if (!existsSync(required)) fail(`${required} is missing. Run \`npm run setup\` first.`);
 }
-const devPorts = { frontend: "3000", BACKEND_PORT: backendPort, PIPELINE_PORT: pipelinePort };
+const pipelineUrl = pipeline ? realPipelineUrl() : null;
+const devPorts = { frontend: "3000", BACKEND_PORT: backendPort };
+if (!pipeline) devPorts.PIPELINE_PORT = pipelinePort;
 await checkPortsFree(devPorts);
 checkDocker();
 
@@ -63,7 +69,10 @@ const { default: concurrently } = await import("concurrently");
 
 step(
   `Frontend http://localhost:3000 · API http://localhost:${backendPort}/docs · ` +
-    `Pipeline mock http://localhost:${pipelinePort} · Supabase Studio http://127.0.0.1:54323`,
+    (pipeline
+      ? `Pipeline ${pipelineUrl} (from backend/.env)`
+      : `Pipeline mock http://localhost:${pipelinePort}`) +
+    " · Supabase Studio http://127.0.0.1:54323",
 );
 const { result } = concurrently(
   [
@@ -86,21 +95,28 @@ const { result } = concurrently(
       name: "api",
       command: `uv run fastapi dev --port ${backendPort}`,
       cwd: BACKEND_DIR,
-      // Win over backend/.env, so calls always go to the mock started here.
-      env: {
-        PIPELINE_WS_URL: `ws://localhost:${pipelinePort}`,
-        PIPELINE_BACKEND_SECRET: LOCAL_PIPELINE_SECRET,
-      },
+      // Win over backend/.env, so calls go to the mock started here. With --pipeline the backend
+      // reads them from backend/.env instead.
+      env: pipeline
+        ? {}
+        : {
+            PIPELINE_WS_URL: `ws://localhost:${pipelinePort}`,
+            PIPELINE_BACKEND_SECRET: LOCAL_PIPELINE_SECRET,
+          },
       prefixColor: "green",
     },
-    {
-      name: "pipeline",
-      command:
-        `uv run uvicorn --app-dir ../voice-pipeline mock_server:app --port ${pipelinePort} ` +
-        "--reload --reload-dir ../voice-pipeline",
-      cwd: BACKEND_DIR,
-      prefixColor: "magenta",
-    },
+    ...(pipeline
+      ? []
+      : [
+          {
+            name: "pipeline",
+            command:
+              `uv run uvicorn --app-dir ../voice-pipeline mock_server:app --port ${pipelinePort} ` +
+              "--reload --reload-dir ../voice-pipeline",
+            cwd: BACKEND_DIR,
+            prefixColor: "magenta",
+          },
+        ]),
   ],
   { killOthersOn: ["failure", "success"], restartTries: 0 },
 );
@@ -110,6 +126,40 @@ try {
 } catch {
   // One of the processes exited with an error (already shown above), or Ctrl+C was pressed.
   process.exitCode = 1;
+}
+
+/**
+ * The pipeline address the backend will use with --pipeline: the shell's PIPELINE_WS_URL, else
+ * backend/.env's (the backend's settings read them in that order). Stops if it is unset or still the
+ * mock's, because then calls would go nowhere or to a mock that is not running.
+ */
+function realPipelineUrl() {
+  const fromFile = parseEnv(readFileSync(path.join(BACKEND_DIR, ".env"), "utf8"));
+  const url = process.env.PIPELINE_WS_URL || fromFile.PIPELINE_WS_URL || "";
+  let mock = false;
+  try {
+    const parsed = new URL(url);
+    mock = ["localhost", "127.0.0.1", "[::1]"].includes(parsed.hostname);
+  } catch {
+    // Not a URL; reported below.
+  }
+  if (!url || mock) {
+    fail(
+      `--pipeline uses the pipeline settings in backend/.env, but PIPELINE_WS_URL is ` +
+        `${url || "(empty)"}${mock ? ", the mock's address" : ""}. Set PIPELINE_WS_URL, ` +
+        "PIPELINE_BACKEND_SECRET and PIPELINE_SUPABASE_URL there as voice-pipeline/dev/POD.md " +
+        '("With the backend") says, or leave out --pipeline to use the mock.',
+    );
+  }
+  const secret = process.env.PIPELINE_BACKEND_SECRET || fromFile.PIPELINE_BACKEND_SECRET || "";
+  if (!secret || secret === LOCAL_PIPELINE_SECRET) {
+    console.warn(
+      `\n⚠ PIPELINE_BACKEND_SECRET in backend/.env is ${secret ? "still the mock's" : "empty"}. ` +
+        "A pod started with pod.py has its own secret (pod.py names it when the pod is ready), " +
+        "and the backend refuses the pod's claims unless the two match.",
+    );
+  }
+  return url;
 }
 
 /** The local stack's API URL, or null if `supabase status` cannot say (then nothing is checked). */

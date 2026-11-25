@@ -74,9 +74,12 @@ class LocalRemote(pod.Remote):
         return done.stdout.decode()
 
 
+DEV = {"PIPELINE_DEV_TOKEN": "tok"}
+
+
 def start_args(**kw):
     base = dict(engine="chatterbox", gpu=None, max_price=2.5, community=False, idle_minutes=30,
-                llm=None, yes=True, another=False, voice=None)
+                llm=None, yes=True, another=False, voice=None, backend=None)
     return Namespace(**{**base, **kw})
 
 
@@ -92,7 +95,7 @@ def test_gpus_that_fit_are_ranked_in_stock_first_then_by_price():
 
 def test_create_moves_on_when_a_gpu_is_taken():
     api = FakeAPI(refuse={"NVIDIA RTX 6000 Ada Generation"})
-    created, env = pod.create_pod(api, start_args(), "tok", "ssh-ed25519 AAAA test")
+    created, env = pod.create_pod(api, start_args(), DEV, "ssh-ed25519 AAAA test")
     assert created["gpu"]["id"] == "NVIDIA RTX PRO 6000 Blackwell Server Edition"
     first, second = api.created
     assert first["gpu"] == {"id": "NVIDIA RTX 6000 Ada Generation", "count": 1, "minCudaVersion": "12.8"}
@@ -109,12 +112,12 @@ def test_create_moves_on_when_a_gpu_is_taken():
 def test_create_gives_up_with_advice_when_everything_is_taken():
     api = FakeAPI(refuse={g["id"] for g in CATALOG})
     with pytest.raises(pod.PodError, match="Every GPU that fits is taken"):
-        pod.create_pod(api, start_args(), "tok", "key")
+        pod.create_pod(api, start_args(), DEV, "key")
 
 
 def test_drama_asks_for_an_80_gb_card_and_more_disk():
     api = FakeAPI()
-    created, _ = pod.create_pod(api, start_args(engine="drama"), "tok", "key")
+    created, _ = pod.create_pod(api, start_args(engine="drama"), DEV, "key")
     assert created["gpu"]["id"] == "NVIDIA RTX PRO 6000 Blackwell Server Edition"
     assert created["disk"] == 150
 
@@ -185,6 +188,59 @@ def test_the_failed_setup_message_is_right_without_an_idle_limit(capsys, monkeyp
     pod.cmd_start(api, start_args(voice=str(tmp_path / "v.wav"), yes=False, idle_minutes=0))
     out = capsys.readouterr().out
     assert "down in 0 minutes" not in out and "will not shut itself down" in out
+
+
+def fake_start(monkeypatch, tmp_path, stage="ready"):
+    """cmd_start with SSH, the upload and the setup faked. Returns the uploads."""
+    key = tmp_path / "key"
+    key.with_name("key.pub").write_text("ssh-ed25519 AAAA test")
+    shell = FakeShell()
+    monkeypatch.setattr(pod, "ssh_key", lambda: key)
+    monkeypatch.setattr(pod, "earlier_pod", lambda api, mine: None)
+    monkeypatch.setattr(pod, "wait_running", lambda api, pod_id: {"id": pod_id})
+    monkeypatch.setattr(pod, "connect", lambda api, pod_id, key: shell)
+    monkeypatch.setattr(pod, "make_archive", lambda: b"code")
+    monkeypatch.setattr(pod, "follow", lambda remote: stage)
+    monkeypatch.setattr(pod, "check_backend", lambda url: None)
+    monkeypatch.setattr(pod, "BACKEND_SECRET_FILE", tmp_path / "secret.txt")
+    monkeypatch.setattr(pod, "STATE", tmp_path)
+    monkeypatch.delenv("PIPELINE_BACKEND_SECRET", raising=False)
+    return shell
+
+
+def test_backend_mode_sends_the_backend_settings_and_no_voice(capsys, monkeypatch, tmp_path):
+    api = FakeAPI()
+    monkeypatch.setattr(api, "pod", lambda pod_id: {"id": pod_id, "cost": 0.59}, raising=False)
+    shell = fake_start(monkeypatch, tmp_path)
+    pod.cmd_start(api, start_args(backend="https://api.tunnel.example/"))
+    env = api.created[0]["env"]
+    secret = (tmp_path / "secret.txt").read_text().strip()
+    assert env["PIPELINE_BACKEND_URL"] == "https://api.tunnel.example"
+    assert env["PIPELINE_BACKEND_SECRET"] == secret and len(secret) >= 40
+    assert "PIPELINE_DEV_TOKEN" not in env
+    assert not any("voice.wav" in target for target in shell.files)  # the backend has the voices
+    out = capsys.readouterr().out
+    assert "PIPELINE_WS_URL=wss://pod123-8001.proxy.runpod.net" in out
+    assert secret not in out  # the secret stays in its file, not on screen
+
+
+def test_backend_mode_reuses_the_saved_secret(monkeypatch, tmp_path):
+    fake_start(monkeypatch, tmp_path)
+    first = pod.backend_secret()
+    assert pod.backend_secret() == first
+    monkeypatch.setenv("PIPELINE_BACKEND_SECRET", "from-env")
+    assert pod.backend_secret() == "from-env"
+
+
+@pytest.mark.parametrize("url", ["http://localhost:8000", "localhost:8000", "http://api.example"])
+def test_backend_mode_needs_a_public_https_address(url):
+    with pytest.raises(pod.PodError, match="public https address"):
+        pod.check_backend_url(url)
+
+
+def test_start_needs_a_voice_or_a_backend():
+    with pytest.raises(pod.PodError, match="--voice"):
+        pod.cmd_start(FakeAPI(), start_args())
 
 
 def test_the_archive_has_the_code_and_no_environments():
@@ -327,3 +383,13 @@ def test_the_launch_returns_at_once_while_the_setup_keeps_running(tmp_path, monk
             break
         time.sleep(0.1)
     assert (tmp_path / "token").read_text().strip() == "a b'c"
+
+
+def test_the_secret_hint_names_where_the_secret_came_from(monkeypatch, tmp_path):
+    monkeypatch.setattr(pod, "BACKEND_SECRET_FILE", tmp_path / "secret.txt")
+    monkeypatch.delenv("PIPELINE_BACKEND_SECRET", raising=False)
+    assert "secret.txt" in pod.backend_settings("abc")[1]
+    monkeypatch.setenv("PIPELINE_BACKEND_SECRET", "from-env")
+    hint = pod.backend_settings("abc")[1]
+    assert "environment" in hint and "secret.txt" not in hint and "from-env" not in hint
+

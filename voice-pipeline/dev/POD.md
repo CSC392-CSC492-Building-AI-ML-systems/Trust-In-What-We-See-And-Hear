@@ -57,6 +57,69 @@ page, or else the `--voice` file of whoever started the pod.
 | `--gpu L40S` | Only rent this GPU type (default: the cheapest that fits) |
 | `--community` | Also try RunPod's cheaper, less reliable community cloud |
 | `--idle-minutes 60` | Minutes without a call before it stops itself (default 30) |
+| `--backend https://...` | Take calls from a backend instead of the test page (see below) |
+
+## With the backend
+
+`start --backend` runs the pod the way the app will use it. A call goes:
+
+1. The app calls `POST /api/v1/calls`. The backend checks the consent and
+   returns the pod's address with a one-time token.
+2. The browser connects to the pod. The pod claims the call from the
+   backend with the token and the shared secret, and gets the scenario and
+   a signed link to the persona's voice.
+3. The pod downloads the voice, and the call runs between the browser and
+   the pod.
+4. After the call, the pod sends the score to the backend, and the app
+   reads it from `GET /api/v1/calls/<id>`.
+
+There is no test page and no `--voice`. Calls start from the app, or from
+`backend_call.py` below.
+
+The pod is on RunPod's network, so it can't reach `localhost`. For a
+backend on your computer, `tunnels.py` gives it two public addresses
+through Cloudflare quick tunnels (free, no account; install `cloudflared`
+with `brew install cloudflared` or `winget install Cloudflare.cloudflared`).
+One goes to the backend. The other serves only the signed voice links from
+the local Supabase, not the rest of its API.
+
+1. Start the local stack with `npm run dev` at the repository root (see the
+   root README). It uses the mock pipeline until step 4. `npm run docker`
+   doesn't work here: it always uses the mock.
+2. In a second window, leave this running:
+   `python3 voice-pipeline/dev/tunnels.py`
+   With the hosted Supabase, add `--no-supabase`.
+3. `python3 voice-pipeline/dev/pod.py start --backend <backend address it printed>`
+4. When the pod is ready, set the three settings the two scripts printed in
+   `backend/.env` (`npm run setup` already wrote the first two with the
+   mock's values, so replace those):
+
+   | Setting | Value |
+   |---|---|
+   | `PIPELINE_WS_URL` | `wss://<pod id>-8001.proxy.runpod.net` |
+   | `PIPELINE_BACKEND_SECRET` | the secret `pod.py` names when the pod is ready: the contents of `~/.tiwwsah/pipeline-backend-secret.txt`, which it makes the first time, or your own `PIPELINE_BACKEND_SECRET`, if you set one when starting the pod |
+   | `PIPELINE_SUPABASE_URL` | the voice-link address from `tunnels.py` (leave it out with `--no-supabase`) |
+
+   Then stop `npm run dev` with Ctrl+C and start it again as
+   `npm run dev -- --pipeline`. It starts no mock and leaves these settings
+   to the backend, and it stops if `PIPELINE_WS_URL` is still the mock's.
+
+5. Make a call. Until the app can, from `backend/`:
+
+   ```bash
+   uv run python ../voice-pipeline/dev/backend_call.py \
+       --email alice@example.com --password demo-password
+   ```
+
+   It starts a call, plays the three short replies in `dev/replies/` as
+   your side of the conversation (or your own WAVs, 16 kHz mono 16-bit,
+   listed after the options),
+   hangs up and prints the score the backend stored. The persona needs a
+   voice uploaded through `PUT /api/v1/users/me/voice` (the local demo
+   accounts have none), and each call uses up one consent.
+
+The tunnel addresses change every time `tunnels.py` starts, and a pod keeps
+the backend address it was started with, so restart both together.
 
 ## Frontend testing
 
