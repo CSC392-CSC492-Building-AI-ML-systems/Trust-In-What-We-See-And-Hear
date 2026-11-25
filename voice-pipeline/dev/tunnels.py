@@ -175,7 +175,8 @@ def main() -> None:
         print("1. Start the pod against this backend:")
         print(f"     python voice-pipeline/dev/pod.py start --backend {backend}")
         print()
-        print("2. Then set these for the backend and restart it (pod.py prints the first two):")
+        print("2. Then set these in backend/.env (pod.py prints the first two) and restart the")
+        print("   backend with `npm run dev -- --pipeline`:")
         print("     PIPELINE_WS_URL=wss://<pod id>-8001.proxy.runpod.net")
         print("     PIPELINE_BACKEND_SECRET=<the secret pod.py names when the pod is ready>")
         if len(tunnels) > 1:

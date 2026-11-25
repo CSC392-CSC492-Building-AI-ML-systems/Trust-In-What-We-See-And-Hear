@@ -61,12 +61,16 @@ export function loadRootEnv() {
  * The options `npm run setup|dev|docker -- ...` accept. Only --no-demo-data, which skips loading
  * supabase/local-dev-data.sql (data loaded earlier stays until `supabase db reset`).
  */
-export function parseOptions() {
+export function parseOptions({ pipeline = false } = {}) {
+  const options = { "no-demo-data": { type: "boolean" } };
+  if (pipeline) options.pipeline = { type: "boolean" };
   try {
-    const { values } = parseArgs({ options: { "no-demo-data": { type: "boolean" } } });
-    return { demoData: !values["no-demo-data"] };
+    const { values } = parseArgs({ options });
+    return { demoData: !values["no-demo-data"], pipeline: Boolean(values.pipeline) };
   } catch (error) {
-    fail(`${error.message}\nThe only option is --no-demo-data, e.g. \`npm run dev -- --no-demo-data\`.`);
+    const names = Object.keys(options).map((name) => `--${name}`);
+    const list = names.length === 1 ? `The only option is ${names[0]}` : `The options are ${names.join(" and ")}`;
+    fail(`${error.message}\n${list}, e.g. \`npm run dev -- --no-demo-data\`.`);
   }
 }
 
