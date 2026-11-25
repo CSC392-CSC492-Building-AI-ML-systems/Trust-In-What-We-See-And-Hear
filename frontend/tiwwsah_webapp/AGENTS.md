@@ -14,6 +14,7 @@ Paths are from the repository root. `AGENTS.md` there has the full list.
 
 - Endpoints and their shapes: the backend's generated docs at `/docs` on a running backend.
 - Sign-in and sending the token to the backend: `docs/authentication.md` (section 2.6 for calling the backend).
+- Identity verification (Didit): `frontend/tiwwsah_webapp/docs/identity-verification.md`, and `backend/app/modules/verification/README.md` for the backend's side.
 - Starting a call: `POST /api/v1/calls` returns a `ws_url` to connect to (`voice-pipeline/BACKEND.md`, section 1).
 - The call WebSocket (messages, audio formats, turn-taking, errors, results): `voice-pipeline/PROTOCOL.md`.
 - The result after a call: poll `GET /api/v1/calls/<id>` until `status` is `completed` or `failed` (`voice-pipeline/PROTOCOL.md`, "Call results"). The full response, including `failure_reason` for a failed call, is in `/docs`; the examples in PROTOCOL.md and the mock leave fields out.
