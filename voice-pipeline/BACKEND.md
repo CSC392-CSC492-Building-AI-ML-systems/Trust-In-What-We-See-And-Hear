@@ -1,4 +1,4 @@
-# What the pipeline needs from the backend (proposal)
+# What the pipeline needs from the backend
 
 How a call gets from `POST /api/v1/calls` to the voice pipeline and back.
 Both sides are built: the backend in `backend/app/modules/calls/router.py`
@@ -31,9 +31,10 @@ browser                    backend                      pipeline
 
 ## 1. Starting a call: `POST /api/v1/calls`
 
-Already specified: the logged-in user sends `consent_id` and `scenario_id`.
-The backend runs `use_consent`, creates the `calls` row as `queued`, and
-makes a token. The response gains one field:
+The logged-in user sends `consent_id` and `scenario_id`. The backend runs
+`use_consent`, creates the `calls` row as `queued`, and makes a token. The
+response includes `ws_url` (abridged here; `/docs` on a running backend has
+the full shape):
 
 ```json
 {
@@ -48,7 +49,7 @@ makes a token. The response gains one field:
 - `ws_url` is complete, so the frontend does not need to know where the
   pipeline runs. The host is a backend setting.
 - The token is random (32 bytes or more, URL-safe), single use, and expires
-  if not claimed within 2 minutes. Store only a hash of it.
+  if not claimed within 2 minutes. Only a hash of it is stored.
 
 ## 2. Claiming a call: `POST /api/v1/internal/calls/<call id>/claim`
 
@@ -94,8 +95,10 @@ If the pipeline has no free line it says `busy` without claiming, so the
 token is not spent and the same `ws_url` can be tried again until it expires.
 
 A call that was claimed but never gets a result (the pod died, for example)
-stays `in_progress`. The backend should mark such calls `failed` after
-`max_duration_seconds` plus a few minutes.
+stays `in_progress`. The backend fails it with `failure_reason: timed_out`
+the next time the user lists or reads their calls, once
+`call_result_timeout_seconds` (default 15 minutes) have passed since it
+started. A `queued` call whose token expired is failed the same way.
 
 ## 3. Handing over the result: `POST /api/v1/internal/calls/<call id>/result`
 
@@ -143,7 +146,9 @@ so the same report can be sent twice. A call that was never claimed gets
 
 `status` uses the existing `call_status` values. `summary` is `null` until
 the call is `completed`, then it is the stored result plus
-`duration_seconds`:
+`duration_seconds`. A `failed` call has a `failure_reason`: `timed_out`,
+`error`, `not_scored` or `voice_unavailable`. The example is abridged;
+`/docs` has the full response:
 
 ```json
 {

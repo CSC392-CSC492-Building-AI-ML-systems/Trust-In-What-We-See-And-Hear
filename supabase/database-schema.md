@@ -22,6 +22,7 @@ and the tables only store the storage path.
 |---|---|---|
 | `auth.users` | Managed by Supabase Auth (email, password hash) | None (Supabase Auth on the client) |
 | `users` | App-level profile for each user (name, ID verification, onboarding answers) | `finishOnboarding`, `VerifyUser`, `getUserInfo`, `editUserInfo` |
+| `identity_verifications` | Each identity verification session started with Didit, and its status | `VerifyUser`, `getVerification` |
 | `friendships` | Friend requests and accepted friendships between two users | `sendFriendRequest`, `acceptFriendRequest`, `declineFriendRequest`, `getFriendsList`, `removeFriend` |
 | `voices` | Each user's own voice reference sample for Chatterbox | `uploadVoiceSample`, `getVoice`, `deleteVoice` |
 | `scam_consents` | Time-limited permission from a friend to use their profile and voice | `RequestConsent`, `AcceptConsent`, `DeclineConsent`, `getConsents` |
@@ -34,6 +35,7 @@ and the tables only store the storage path.
 ```mermaid
 erDiagram
     auth_users ||--|| users : "has"
+    users ||--o{ identity_verifications : "verifies with"
     users ||--o{ friendships : "sends request"
     users ||--o{ friendships : "receives request"
     users ||--o| voices : "has voice"
@@ -140,7 +142,40 @@ Notes:
 - There is no "onboarding completed" column: the row only exists once onboarding is finished, so
   `created_at` is when it finished. Removing onboarding answers through `editUserInfo` sets
   `onboarding_answers` to null but keeps the row, so the user is not sent back through onboarding.
-- ID documents are not stored here. `verified_at` only records that verification passed.
+- ID documents are not stored here. `verified_at` only records that verification passed. It is set
+  when the backend sees a Didit session is `approved` (`identity_verifications`).
+
+### `identity_verifications` (VerifyUser, getVerification)
+
+One row per verification session the backend starts with Didit (migration `0006`). The user
+verifies on Didit's page (ID document, selfie, liveness); the backend only follows the session's
+status, read from Didit's API. Names, dates of birth, document numbers and images stay with Didit
+and are never copied here.
+
+```sql
+create table public.identity_verifications (
+  id                  uuid primary key default gen_random_uuid(),
+  user_id             uuid not null references public.users(id) on delete cascade,
+  provider_session_id text unique not null,  -- Didit's session_id
+  -- Didit's status in snake case, e.g. 'Not Started' is stored as 'not_started'.
+  -- 'kyc_expired' is allowed because Didit has it, but is only seen once the
+  -- webhook is added (see backend/app/modules/verification/README.md).
+  status              text not null check (status in (
+    'not_started', 'in_progress', 'in_review', 'awaiting_user', 'resubmitted',
+    'approved', 'declined', 'expired', 'abandoned', 'kyc_expired'
+  )),
+  created_at          timestamptz not null default now(),
+  updated_at          timestamptz not null default now()
+);
+create index identity_verifications_user_created_idx
+  on public.identity_verifications (user_id, created_at desc);
+```
+
+- Starting again before finishing reuses the session: Didit hands back the user's unfinished one,
+  so a user has a new row only after a session ends without approval.
+- `status` is a `text` check, not an enum, so a status Didit adds later needs only a new migration
+  that widens the check.
+- RLS is on with no policies: only the backend reads or writes it.
 
 ### `friendships`
 
@@ -325,7 +360,7 @@ create table public.call_results (
 
 ### `updated_at` trigger
 
-`users`, `voices` and `scam_scenarios` have an `updated_at` column. A trigger sets it on every
+`users`, `identity_verifications`, `voices` and `scam_scenarios` have an `updated_at` column. A trigger sets it on every
 update, so the backend never has to.
 
 ```sql
@@ -398,6 +433,9 @@ create policy "read scenarios" on public.scam_scenarios
   using ((created_by is null and is_active) or created_by = auth.uid());
 ```
 
+`identity_verifications` (migration `0006`) has RLS on and no policies, so clients cannot read or
+write it at all; `GET /users/me/verification` returns the user's own status through the backend.
+
 Friends cannot read each other's `users` rows through RLS, because policies apply to whole rows and
 would expose onboarding answers. `getFriendsList` returns only the safe fields
 through the backend.
@@ -447,7 +485,8 @@ the frontend calls Supabase Auth directly, which writes `auth.users`.
 
 | Endpoint | Reads | Writes |
 |---|---|---|
-| `POST VerifyUser` | `users` | `users.verified_at` |
+| `POST VerifyUser` | `users`, `identity_verifications` | `identity_verifications`, `users.verified_at` (when Didit reports an unfinished session was approved) |
+| `GET getVerification` | `users`, `identity_verifications` | `identity_verifications`, `users.verified_at` (when Didit reports a new status) |
 | `POST finishOnboarding` | `users` | `users` (creates the row: `username`, `first_name`/`last_name` copied from Supabase `user_metadata`, privacy policy acceptance, `onboarding_answers`) |
 | `GET getUserInfo` | `users`, `voices` | – |
 | `PUT editUserInfo` | `users` | `users` (not `verified_at`) |

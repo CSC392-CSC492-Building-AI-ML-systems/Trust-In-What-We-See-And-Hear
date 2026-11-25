@@ -4,7 +4,8 @@ API_DESCRIPTION = """
 Backend API for Trust In What We See And Hear.
 
 **Status:** in progress. Authentication (Supabase Auth),
-the current user's profile (`/api/v1/users/me`) and voice sample
+the current user's profile (`/api/v1/users/me`), identity verification
+(`/api/v1/users/me/verification`) and voice sample
 (`/api/v1/users/me/voice`), friends, consents, scenarios and calls are
 implemented. Every other `/api/v1` operation currently returns
 `501 Not Implemented` once authenticated.
@@ -54,7 +55,11 @@ OPENAPI_TAGS = [
     },
     {
         "name": "Identity verification",
-        "description": "Verification through an external provider (Persona or similar).",
+        "description": (
+            "Verifying the user's identity with Didit: an ID document, a selfie and "
+            "a liveness check, on Didit's page. Only the result is kept here; the "
+            "document and selfie stay with Didit."
+        ),
     },
     {
         "name": "Friends",

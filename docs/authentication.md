@@ -113,7 +113,7 @@ No quotes are needed around these values.
 ```dotenv
 NEXT_PUBLIC_SUPABASE_URL=https://<project-ref>.supabase.co
 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=sb_publishable_...
-BACKEND_API_URL=http://localhost:8000
+NEXT_PUBLIC_API_URL=http://localhost:8000
 ```
 
 ---
@@ -134,8 +134,8 @@ cd frontend/tiwwsah_webapp
 npm install @supabase/supabase-js @supabase/ssr
 ```
 
-Add the variables from [1.7](#17-environment-files) to `.env.local`. `BACKEND_API_URL` replaces
-the current `BACKEND_API_IP`.
+Add the variables from [1.7](#17-environment-files) to `.env.local` (or copy
+`frontend/tiwwsah_webapp/.env.example`).
 
 ### 2.2 Supabase clients
 
@@ -379,7 +379,7 @@ export async function apiFetch(path: string, init: RequestInit = {}) {
     headers.set("Content-Type", "application/json");
   }
 
-  return fetch(`${process.env.BACKEND_API_URL}${path}`, {
+  return fetch(`${process.env.NEXT_PUBLIC_API_URL}${path}`, {
     ...init,
     headers,
     cache: "no-store",
@@ -435,7 +435,8 @@ The email is not part of the profile. If a page needs it, read it from Supabase:
 `(await supabase.auth.getUser()).data.user?.email`.
 
 **Onboarding form**: submit to `POST /api/v1/users/me/onboarding` through a server action using
-`apiFetch`, then redirect to `/dashboard` (or `/verify-identity`):
+`apiFetch`, then redirect to `/dashboard` (or `/verify-identity`; the verification endpoints and
+the page's flow are in `backend/app/modules/verification/README.md`):
 
 ```json
 {
@@ -513,6 +514,9 @@ Full API reference: `http://localhost:8000/docs` while the backend is running.
 ---
 
 ## 4. Testing the flow locally
+
+These steps test against the hosted project. To test against a local Supabase stack with ready-made
+accounts instead, follow [Local development](../README.md#local-development) in the root README.
 
 1. Fill in both env files ([1.7](#17-environment-files)).
 2. Start the backend: `cd backend && uv run fastapi dev`.

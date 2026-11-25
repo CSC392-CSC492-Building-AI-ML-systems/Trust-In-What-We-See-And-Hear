@@ -3,6 +3,20 @@
 - `migrations/`: SQL migrations, named `<number>_migration<number>.sql` so they sort in the order
   they must run. This is the source of truth for the database.
 - `database-schema.md`: explains the schema (tables, relationships, RLS and why).
+- `config.toml`: settings for the local Supabase stack the Supabase CLI runs (see
+  [Local development](../README.md#local-development)). The GitHub integration does not apply it
+  to the hosted project: that would take a `[remotes]` block naming the project, so do not add one
+  without agreeing it first. Its `project_id` names the local Docker containers and network, which
+  `compose.yaml` refers to.
+- `local-dev-data.sql`: demo accounts and data for the local stack (see
+  [Demo accounts](../README.md#demo-accounts)). `npm run setup`, `npm run dev` and
+  `npm run docker` load it on every start unless given `--no-demo-data`. It is deliberately not
+  named `seed.sql`, because Supabase preview branches load `seed.sql` and would get its publicly
+  known passwords.
+
+`npm run setup`, `npm run dev` and `npm run docker` apply new migrations to the local stack when
+they start. To try a new migration while they are running, use `npm run supabase migration up`, or
+`npm run supabase db reset` to rebuild the local database from scratch.
 
 ## Applying migrations
 
@@ -26,6 +40,7 @@ Integration settings this relies on (**Project Settings → Integrations → Git
 |---|---|
 | `0001_migration1.sql` | Initial schema: enums, tables, indexes, `updated_at` triggers and Row Level Security |
 | `0005_calls_pipeline.sql` | `scam_scenarios.ask`; the `calls` columns the voice pipeline needs (claim token hash, context, time limit); each user's private note about a friend (`friendships.requester_notes`/`addressee_notes`), hidden from direct client reads |
+| `0006_identity_verifications.sql` | `identity_verifications`: each identity verification session started with Didit and its status (backend only, no personal data) |
 
 ## Making a schema change
 

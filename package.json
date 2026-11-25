@@ -1,0 +1,20 @@
+{
+  "name": "tiwwsah-dev",
+  "private": true,
+  "description": "Local development tooling: sets up and runs the frontend, backend, mock voice pipeline and local Supabase together.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "setup": "node scripts/setup.mjs",
+    "dev": "node scripts/dev.mjs",
+    "docker": "node scripts/docker.mjs",
+    "test": "node scripts/test.mjs",
+    "supabase": "supabase"
+  },
+  "devDependencies": {
+    "concurrently": "10.0.7",
+    "supabase": "3.1.0"
+  }
+}
