@@ -16,7 +16,7 @@ class VoiceResponse(BaseModel):
 
     status: VoiceStatus = Field(
         description=(
-            "`ready`: friends can use it in calls. Chatterbox clones from the "
+            "`ready`: friends can use it in calls. The voice engines clone from the "
             "reference sample without per-user training, so an accepted upload is "
             "`ready` at once. `failed`: see `error_message` and upload a new sample. "
             "`uploaded` and `training` are reserved for the voice pipeline, in case "

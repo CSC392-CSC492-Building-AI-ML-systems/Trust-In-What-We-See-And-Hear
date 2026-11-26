@@ -24,7 +24,7 @@ and the tables only store the storage path.
 | `users` | App-level profile for each user (name, ID verification, onboarding answers) | `finishOnboarding`, `VerifyUser`, `getUserInfo`, `editUserInfo` |
 | `identity_verifications` | Each identity verification session started with Didit, and its status | `VerifyUser`, `getVerification` |
 | `friendships` | Friend requests and accepted friendships between two users | `sendFriendRequest`, `acceptFriendRequest`, `declineFriendRequest`, `getFriendsList`, `removeFriend` |
-| `voices` | Each user's own voice reference sample for Chatterbox | `uploadVoiceSample`, `getVoice`, `deleteVoice` |
+| `voices` | Each user's own voice reference sample for the voice pipeline | `uploadVoiceSample`, `getVoice`, `deleteVoice` |
 | `scam_consents` | Time-limited permission from a friend to use their profile and voice | `RequestConsent`, `AcceptConsent`, `DeclineConsent`, `getConsents` |
 | `scam_scenarios` | Built-in and user-created scam scripts the AI pipeline uses | `addScenario`, `removeScenario`, `UpdateScenario` |
 | `calls` | One row per simulated scam call | `GetCallHistory`, `GetCallDetails` |
@@ -212,10 +212,10 @@ create index friendships_addressee_id_idx on public.friendships(addressee_id);
 
 ### `voices` (uploadVoiceSample)
 
-One voice per user. Chatterbox is pretrained and clones a voice from a reference recording, so there
+One voice per user. The voice engines are pretrained and clone a voice from a reference recording, so there
 is no per-user training: the user uploads a reference sample of their own voice
 (`PUT /api/v1/users/me/voice`), and uploading again replaces it and deletes the old files. The
-backend checks the recording (15–60 seconds, not silent) and sets `status` to `ready` as soon as it
+backend tidies the recording (silence at the ends cut, long pauses shortened, at most 30 seconds kept, leveled) and checks it (at most 60 seconds as recorded, at least 10 seconds of speech, not silent) and sets `status` to `ready` as soon as it
 is saved, since the voice pipeline reads the sample directly when a call starts. `uploaded` and
 `training` are not used for now, and nothing is derived from the sample, so `model_storage_path`
 stays null. Only the owner's own voice is ever uploaded. Friends get access through
@@ -474,7 +474,7 @@ minutes (a newer one may belong to an upload still saving its record).
   (`DELETE /api/v1/users/me/voice`, which deletes the files, then the row, then older leftovers;
   it can be repeated until it succeeds). A file left by a failed request is deleted on the user's
   next upload or delete. **TBD:** a scheduled sweep for users who never come back. The sample is
-  needed for every call, since Chatterbox clones from it each time.
+  needed for every call, since the voice engines clone from it each time.
 
 ---
 

@@ -6,6 +6,12 @@ claim any length, so the only trustworthy length is the audio ffmpeg actually
 decodes. Every sample is stored as mono 16-bit PCM WAV at one sample rate, so
 the voice pipeline only ever reads one format.
 
+The decoded audio is then tidied (`tidy`) before it is checked and stored,
+because the voice engines clone from all of it: silence at the start and end
+is cut, long pauses are shortened, the result is capped at
+`MAX_REFERENCE_SECONDS` and leveled to `TARGET_DBFS`. A loud, clipped
+reference with long pauses made Ming run on and garble its output.
+
 The upload is untrusted, so ffmpeg runs as a separate process with:
 
 - only local file input (an HLS playlist, for example, could otherwise make it
@@ -20,9 +26,9 @@ The upload is untrusted, so ffmpeg runs as a separate process with:
 - a time limit, and at most `MAX_CONCURRENT_DECODES` at once, and one per
   user. Uploads wait for a free decoder without holding a worker thread.
 
-The client's file name and content type are ignored. The decoded audio's
-length and the average loudness of its start are reported, so the upload can
-reject recordings that are too short, too long or silent.
+The client's file name and content type are ignored. The recorded length, the
+length of the tidied audio and its loudness are reported, so the upload can
+reject recordings that are too long, too short or silent.
 
 AI-assisted code (written with Claude Code), cited per the CSC398 AI policy.
 """
@@ -38,7 +44,7 @@ import tempfile
 import threading
 import wave
 from collections import deque
-from collections.abc import Hashable
+from collections.abc import Hashable, Sequence
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -72,10 +78,35 @@ MAX_CONCURRENT_DECODES = 2
 DECODER_WAIT_SECONDS = 10
 DECODE_TIMEOUT_SECONDS = 20
 OUTPUT_SAMPLE_BYTES = 2  # 16-bit mono
-# Loudness is measured over the start of the recording only: Chatterbox
-# conditions on at most the first 15 seconds, so a voice that only starts
-# later is as good as silent.
-LOUDNESS_WINDOW_SECONDS = 15
+# Tidying (see `tidy`). Levels are measured in 50 ms frames. A frame is
+# silent when it is this far below the loudest speech (the 95th percentile
+# frame, so a click does not count), and always below the floor.
+FRAME_SECONDS = 0.05
+SILENCE_BELOW_SPEECH_DB = 35
+SILENCE_FLOOR_DBFS = -70
+# Room noise: the 10th percentile frame. When it is at least
+# NOISE_CONTRAST_DB below the speech, frames up to NOISE_MARGIN_DB above it
+# (at most half way to the speech) are silent too, so a noisy room still gets
+# trimmed. With less contrast there is no floor to tell apart (a steady tone,
+# or speech with almost no pauses), and only the rule above applies.
+NOISE_PERCENTILE = 0.10
+NOISE_CONTRAST_DB = 6
+NOISE_MARGIN_DB = 10
+# Kept before the first and after the last speech, so soft word edges stay.
+EDGE_SECONDS = 0.2
+# A pause longer than LONG_PAUSE_SECONDS is shortened to KEPT_PAUSE_SECONDS.
+LONG_PAUSE_SECONDS = 1.0
+KEPT_PAUSE_SECONDS = 0.5
+# The voice engines clone from the whole reference; more than this adds little
+# and slows them down.
+MAX_REFERENCE_SECONDS = 30
+# A cut at the cap goes in the last pause after this, if there is one.
+EARLIEST_CUT_SECONDS = 20
+# Speech level the reference is leveled to (RMS), and the peak it may not
+# pass (-1 dBFS), so leveling never clips.
+TARGET_DBFS = -20
+PEAK_LIMIT = 0.89
+END_FADE_SECONDS = 0.01
 WAV_HEADER_ALLOWANCE = 1024
 # Only the end of ffmpeg's error output is kept: a crafted file can make it
 # print an error for every packet.
@@ -95,12 +126,15 @@ class DecodeInProgressError(Exception):
 
 @dataclass(frozen=True)
 class DecodedAudio:
-    data: bytes  # mono 16-bit PCM WAV
+    data: bytes  # the tidied audio, mono 16-bit PCM WAV
     extension: str
     content_type: str
+    # Length of the tidied audio, which is what gets stored.
     duration_seconds: float
-    # Average (RMS) level of the first LOUDNESS_WINDOW_SECONDS, relative to
-    # full scale; -inf for silence.
+    # Length of the audio as decoded, before tidying.
+    recorded_seconds: float
+    # Average (RMS) level of the tidied audio before leveling, relative to full
+    # scale; -inf if nothing in it is louder than silence.
     loudness_dbfs: float
 
 
@@ -298,8 +332,123 @@ def _read_decoded(output: bytes) -> DecodedAudio | None:
         return None
     if frames == 0:
         return None
-    window = pcm[: int(LOUDNESS_WINDOW_SECONDS * rate) * OUTPUT_SAMPLE_BYTES]
-    return DecodedAudio(output, EXTENSION, CONTENT_TYPE, frames / rate, loudness_dbfs(window))
+    samples = _samples(pcm)
+    tidied, loudness = tidy(samples, rate)
+    return DecodedAudio(
+        _wav(tidied, rate), EXTENSION, CONTENT_TYPE, len(tidied) / rate, frames / rate, loudness
+    )
+
+
+def tidy(samples: Sequence[int], rate: int) -> tuple[array.array, float]:
+    """Make a reference the voice engines clone well from.
+
+    Cuts silence at the start and end (keeping EDGE_SECONDS), shortens pauses
+    longer than LONG_PAUSE_SECONDS to KEPT_PAUSE_SECONDS, caps the result at
+    MAX_REFERENCE_SECONDS (in a pause if there is one late enough), removes any
+    DC offset and levels it to TARGET_DBFS without peaks above PEAK_LIMIT.
+    Steady room noise counts as silence (see NOISE_PERCENTILE). A recording of
+    nothing but noise cannot be told apart from steady speech and is kept.
+
+    Returns the samples and their loudness before leveling. Audio with nothing
+    louder than silence gives no samples and -inf. Clipping in the recording
+    cannot be undone; leveling only makes a loud one quieter.
+    """
+    frame = max(1, round(FRAME_SECONDS * rate))
+    levels = [_level(samples[i : i + frame]) for i in range(0, len(samples), frame)]
+    heard = sorted(level for level in levels if level > -math.inf)
+    if not heard:
+        return array.array("h"), -math.inf
+    loudest = heard[min(len(heard) - 1, int(0.95 * len(heard)))]
+    threshold = max(loudest - SILENCE_BELOW_SPEECH_DB, SILENCE_FLOOR_DBFS)
+    noise = sorted(levels)[int(NOISE_PERCENTILE * len(levels))]  # -inf if digital silence
+    contrast = loudest - noise
+    if NOISE_CONTRAST_DB <= contrast < math.inf:
+        threshold = max(threshold, noise + min(NOISE_MARGIN_DB, contrast / 2))
+    speech = [level >= threshold for level in levels]
+    if not any(speech):
+        return array.array("h"), -math.inf
+
+    first = speech.index(True)
+    last = len(speech) - 1 - speech[::-1].index(True)
+    edge = round(EDGE_SECONDS * rate)
+    half_pause = round(KEPT_PAUSE_SECONDS * rate / 2)
+    long_pause = math.ceil(LONG_PAUSE_SECONDS / FRAME_SECONDS)
+    kept: list[tuple[int, int]] = []
+    start = max(0, first * frame - edge)
+    index = first
+    while index <= last:
+        if speech[index]:
+            index += 1
+            continue
+        run_end = index
+        while not speech[run_end]:
+            run_end += 1
+        if run_end - index > long_pause:
+            kept.append((start, index * frame + half_pause))
+            start = run_end * frame - half_pause
+        index = run_end
+    kept.append((start, min(len(samples), (last + 1) * frame + edge)))
+
+    out = array.array("h")
+    for begin, end in kept:
+        out.extend(samples[begin:end])
+    out = _cap(out, rate, frame, threshold)
+    if not out:
+        return out, -math.inf
+    mean = sum(out) / len(out)
+    loudness = _level(out)
+    peak = max(abs(value - mean) for value in out)
+    gain = 10 ** ((TARGET_DBFS - loudness) / 20)
+    if peak * gain > PEAK_LIMIT * 32767:
+        gain = PEAK_LIMIT * 32767 / peak
+    fade = min(len(out), round(END_FADE_SECONDS * rate))
+    leveled = array.array("h", (round((value - mean) * gain) for value in out))
+    for i in range(fade):
+        leveled[len(leveled) - 1 - i] = round(leveled[len(leveled) - 1 - i] * i / fade)
+    return leveled, loudness
+
+
+def _cap(samples: array.array, rate: int, frame: int, threshold: float) -> array.array:
+    """At most MAX_REFERENCE_SECONDS, cut in the last pause after EARLIEST_CUT_SECONDS.
+
+    The cut keeps EDGE_SECONDS after the speech before that pause.
+    """
+    limit = round(MAX_REFERENCE_SECONDS * rate)
+    if len(samples) <= limit:
+        return samples
+    earliest = round(EARLIEST_CUT_SECONDS * rate)
+
+    def silent(start: int) -> bool:
+        return _level(samples[start : start + frame]) < threshold
+
+    for start in range(limit - frame, earliest - 1, -frame):
+        if silent(start):
+            end = start + frame
+            while start - frame >= earliest and silent(start - frame):
+                start -= frame
+            return samples[: min(end, start + round(EDGE_SECONDS * rate))]
+    return samples[:limit]
+
+
+def _samples(pcm: bytes) -> array.array:
+    """16-bit little-endian mono PCM as numbers."""
+    samples = array.array("h", pcm[: len(pcm) // 2 * 2])
+    if sys.byteorder == "big":
+        samples.byteswap()
+    return samples
+
+
+def _wav(samples: array.array, rate: int) -> bytes:
+    data = array.array("h", samples)
+    if sys.byteorder == "big":
+        data.byteswap()
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(OUTPUT_SAMPLE_BYTES)
+        audio.setframerate(rate)
+        audio.writeframes(data.tobytes())
+    return buffer.getvalue()
 
 
 def loudness_dbfs(pcm: bytes) -> float:
@@ -307,9 +456,11 @@ def loudness_dbfs(pcm: bytes) -> float:
 
     The mean (DC offset) is removed first: a constant signal is inaudible.
     """
-    samples = array.array("h", pcm[: len(pcm) // 2 * 2])
-    if sys.byteorder == "big":
-        samples.byteswap()
+    return _level(_samples(pcm))
+
+
+def _level(samples: Sequence[int]) -> float:
+    """RMS level in dBFS with the mean removed; -inf for silence or no samples."""
     if not samples:
         return -math.inf
     count = len(samples)
