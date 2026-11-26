@@ -29,6 +29,7 @@ talk to each other are answered in them.
 | Voice recording limits (length, size, loudness, formats) | `voice_sample_*` in `backend/app/core/config.py`, `SUPPORTED_FORMATS` in `backend/app/modules/voices/audio.py`, and the voice upload route in `/docs` |
 | Tables, row level security, retention, which endpoint uses which table | `supabase/database-schema.md` |
 | Sign-in on the frontend and token checks on the backend | `docs/authentication.md` |
+| Identity verification with Didit: endpoints, statuses, setup | `backend/app/modules/verification/README.md`, and `frontend/tiwwsah_webapp/docs/identity-verification.md` for the frontend's pages and polling |
 | Migrations and changing the schema | `supabase/README.md` |
 
 ## Building without a GPU
