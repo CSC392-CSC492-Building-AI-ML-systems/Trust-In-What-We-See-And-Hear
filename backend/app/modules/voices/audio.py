@@ -84,6 +84,14 @@ OUTPUT_SAMPLE_BYTES = 2  # 16-bit mono
 FRAME_SECONDS = 0.05
 SILENCE_BELOW_SPEECH_DB = 35
 SILENCE_FLOOR_DBFS = -70
+# Room noise: the 10th percentile frame. When it is at least
+# NOISE_CONTRAST_DB below the speech, frames up to NOISE_MARGIN_DB above it
+# (at most half way to the speech) are silent too, so a noisy room still gets
+# trimmed. With less contrast there is no floor to tell apart (a steady tone,
+# or speech with almost no pauses), and only the rule above applies.
+NOISE_PERCENTILE = 0.10
+NOISE_CONTRAST_DB = 6
+NOISE_MARGIN_DB = 10
 # Kept before the first and after the last speech, so soft word edges stay.
 EDGE_SECONDS = 0.2
 # A pause longer than LONG_PAUSE_SECONDS is shortened to KEPT_PAUSE_SECONDS.
@@ -338,6 +346,8 @@ def tidy(samples: Sequence[int], rate: int) -> tuple[array.array, float]:
     longer than LONG_PAUSE_SECONDS to KEPT_PAUSE_SECONDS, caps the result at
     MAX_REFERENCE_SECONDS (in a pause if there is one late enough), removes any
     DC offset and levels it to TARGET_DBFS without peaks above PEAK_LIMIT.
+    Steady room noise counts as silence (see NOISE_PERCENTILE). A recording of
+    nothing but noise cannot be told apart from steady speech and is kept.
 
     Returns the samples and their loudness before leveling. Audio with nothing
     louder than silence gives no samples and -inf. Clipping in the recording
@@ -350,6 +360,10 @@ def tidy(samples: Sequence[int], rate: int) -> tuple[array.array, float]:
         return array.array("h"), -math.inf
     loudest = heard[min(len(heard) - 1, int(0.95 * len(heard)))]
     threshold = max(loudest - SILENCE_BELOW_SPEECH_DB, SILENCE_FLOOR_DBFS)
+    noise = sorted(levels)[int(NOISE_PERCENTILE * len(levels))]  # -inf if digital silence
+    contrast = loudest - noise
+    if NOISE_CONTRAST_DB <= contrast < math.inf:
+        threshold = max(threshold, noise + min(NOISE_MARGIN_DB, contrast / 2))
     speech = [level >= threshold for level in levels]
     if not any(speech):
         return array.array("h"), -math.inf

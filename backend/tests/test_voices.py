@@ -8,6 +8,7 @@ import io
 import json
 import math
 import os
+import random
 import shutil
 import struct
 import subprocess
@@ -36,6 +37,7 @@ from app.modules.voices.audio import (
     AudioProcessingUnavailableError,
     decode_blocking,
     loudness_dbfs,
+    tidy,
 )
 from supabase_mock import body, postgres_error, rows
 
@@ -338,6 +340,49 @@ def test_silence_tidies_to_nothing():
     decoded = decode(wav(20, amplitude=0))
     assert decoded.loudness_dbfs == -math.inf
     assert decoded.duration_seconds == 0
+
+
+NOISY_RATE = 8000
+
+
+def noisy_recording(parts, noise_dbfs, seed=1):
+    """Speech-like bursts ("s", seconds) and pauses ("n", seconds) over room noise.
+
+    The "speech" is noise at about -20 dBFS with a 4 Hz syllable envelope;
+    the room noise runs under all of it, as in a real recording.
+    """
+    rng = random.Random(seed)
+    room = 32768 * 10 ** (noise_dbfs / 20)
+    voice = 32768 * 10 ** (-20 / 20) * math.sqrt(2)
+    samples = []
+    for kind, seconds in parts:
+        for n in range(int(seconds * NOISY_RATE)):
+            value = rng.gauss(0, room)
+            if kind == "s":
+                value += rng.gauss(0, voice) * abs(math.sin(2 * math.pi * 4 * n / NOISY_RATE))
+            samples.append(max(-32768, min(32767, round(value))))
+    return samples
+
+
+# 12 s of speech in 33 s: six 2 s phrases with 3 s pauses, 3 s at each end.
+PHRASES = [("n", 3)] + [("s", 2), ("n", 3)] * 6
+
+
+@pytest.mark.parametrize("noise_dbfs", [-70, -55, -50, -40, -30])
+def test_pauses_full_of_room_noise_are_trimmed(noise_dbfs):
+    # The threshold used to sit 35 dB below the speech only, so room noise at
+    # -50 dBFS or louder counted as speech and nothing was trimmed.
+    stored, _ = tidy(noisy_recording(PHRASES, noise_dbfs), NOISY_RATE)
+    # 12 s of speech, five 0.5 s pauses, 0.2 s at each end.
+    assert len(stored) / NOISY_RATE == pytest.approx(14.9, abs=0.3)
+
+
+@pytest.mark.parametrize("noise_dbfs", [-70, -50, -40])
+def test_little_speech_in_a_noisy_room_stays_short(noise_dbfs):
+    # 4 s of speech in 40 s: too little, however loud the room is.
+    parts = [("n", 8), ("s", 2), ("n", 20), ("s", 2), ("n", 8)]
+    stored, _ = tidy(noisy_recording(parts, noise_dbfs), NOISY_RATE)
+    assert len(stored) / NOISY_RATE < 6
 
 
 def test_decode_measures_the_audio_not_the_header():
