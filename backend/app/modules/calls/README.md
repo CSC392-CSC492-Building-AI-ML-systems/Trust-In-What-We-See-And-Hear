@@ -128,10 +128,24 @@ its own safeguards before generating speech.
 
 `scenario.ask` comes from `scam_scenarios.ask` (migration 0005). Scenarios
 created before that column have no ask, and `POST /calls` refuses them with
-`scenario_incomplete`; there is no fallback money request. `details` holds only the
-target's own private note about the persona (`PUT /friends/{user_id}/notes`),
-under the key `What they know about you`; the persona's notes are never used.
-Whose onboarding answers may also populate `details` is still undecided. See
-[FOLLOW_UPS.md](FOLLOW_UPS.md).
+`scenario_incomplete`; there is no fallback money request. `details` holds only facts from
+the person being called (the target, who is the user starting the call), never
+from the persona:
+
+| Key | Value | Source |
+|---|---|---|
+| `What they know about you` | The target's own private note about the persona | `PUT /friends/{user_id}/notes` (`friendships`) |
+| `Their interests` | The target's interests, comma-separated, whole interests up to 100 characters | `interests` in the target's own `users.onboarding_answers`: a list of strings, or comma-separated text |
+
+Why only the target's: the onboarding form tells users their answers are used
+"only to personalize your training", and a call is the target's training. The
+persona's answers and notes would be their data used in someone else's
+training, so they are never read. The onboarding questions are not decided yet
+(the answers have no fixed keys), so only answers chosen on purpose are used;
+the full rationale is in [FOLLOW_UPS.md](FOLLOW_UPS.md). Only `interests` is used: other answers
+(such as `age_range`) add nothing to the conversation and are not given to the
+caller, and the answers are free-form JSON, so unknown keys are ignored rather
+than passed on. A missing, removed or malformed answer adds no detail. To use
+another answer, add it to `onboarding_details` in `service.py` with a test.
 
 AI-assisted documentation (Codex), cited per the CSC398 AI policy.

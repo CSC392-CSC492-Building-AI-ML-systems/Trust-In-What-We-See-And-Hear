@@ -67,7 +67,9 @@ OnboardingAnswers = Annotated[
     Field(
         description=(
             "Answers to the onboarding questions, stored as sent. "
-            "The question set is TBD. At most 10,000 bytes as JSON."
+            "The question set is TBD. At most 10,000 bytes as JSON. "
+            "`interests` (a list of strings, or comma-separated text) is given to "
+            "the caller in the user's own training calls; other answers are not."
         ),
         examples=[{"age_range": "25-34", "interests": ["technology", "travel"]}],
     ),

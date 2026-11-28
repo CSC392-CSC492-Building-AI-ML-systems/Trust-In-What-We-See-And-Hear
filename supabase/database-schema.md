@@ -500,7 +500,7 @@ the frontend calls Supabase Auth directly, which writes `auth.users`.
 | `POST AcceptConsent` | `scam_consents`, `friendships` | `scam_consents` (consenter only; sets `expires_at`) |
 | `POST DeclineConsent` | `scam_consents` | `scam_consents` (consenter only) |
 | `GET getConsents` | `scam_consents`, `users` (safe fields) | – |
-| `POST StartCall` | `scam_scenarios`, `scam_consents`, `users` (names), `voices`, `friendships` (the user's note) | `scam_consents` (`used_at`), `calls` |
+| `POST StartCall` | `scam_scenarios`, `scam_consents`, `users` (names; the user's own `onboarding_answers.interests`), `voices`, `friendships` (the user's note) | `scam_consents` (`used_at`), `calls` |
 | `GET GetCallHistory` | `calls`, `call_results` (score/outcome) | `calls` (fails stale calls) |
 | `GET GetCallDetails` | `calls`, `call_results` | `calls` (fails stale calls) |
 | `PUT uploadVoiceSample` | `voices` | Storage, `voices` |
