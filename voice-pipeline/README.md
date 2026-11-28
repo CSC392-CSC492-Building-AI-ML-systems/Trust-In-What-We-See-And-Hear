@@ -143,8 +143,13 @@ No GPU needed:
 
 ```bash
 cd backend
-uv run pytest ../voice-pipeline/tests
+uv run --with numpy --with soundfile python -m pytest ../voice-pipeline/tests
 ```
+
+The backend's environment has no numpy or soundfile, so the `--with` flags add
+them for this run; without them the served-engine tests (Ming and Drama) are
+skipped. Use `python -m pytest`: plain `pytest` there can miss the added
+packages.
 
 AI-assisted documentation (written with Claude Code and Codex), cited per the CSC398 AI
 policy.
