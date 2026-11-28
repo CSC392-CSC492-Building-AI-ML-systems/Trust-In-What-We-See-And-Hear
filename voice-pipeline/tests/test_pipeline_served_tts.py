@@ -20,7 +20,8 @@ httpx = pytest.importorskip("httpx")
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 from pipeline.tts.served import (  # noqa: E402
-    RATE, DramaEngine, MingEngine, StreamResampler, audio_events, leveled, to_pcm16)
+    RATE, DramaEngine, MingEngine, StreamResampler, audio_events, leveled, spoken_words,
+    to_pcm16)
 
 
 def wav(seconds: float, rate: int) -> bytes:
@@ -198,6 +199,22 @@ def test_a_quiet_reference_is_brought_to_speaking_level():
     assert np.abs(out).max() < 10 ** (-1 / 20) + 1e-3  # no clipping
 
 
+def test_leveling_keeps_the_recordings_sample_rate():
+    # Drama encodes references at 44.1 kHz; the test page records at 48 kHz.
+    rate = 48000
+    t = np.arange(rate * 2) / rate
+    speech = np.sin(2 * np.pi * 9000 * t) * 0.02  # detail a 24 kHz copy cannot hold
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate)
+        w.writeframes((speech * 32767).astype("<i2").tobytes())
+    with wave.open(io.BytesIO(leveled(buf.getvalue())), "rb") as w:
+        assert w.getframerate() == rate
+        out = np.frombuffer(w.readframes(w.getnframes()), dtype="<i2") / 32768
+    assert len(out) == len(speech)
+    assert 20 * np.log10(np.sqrt(np.mean(out ** 2))) == pytest.approx(-20, abs=1)
+
+
 def test_a_loud_reference_is_not_pushed_into_clipping():
     rate = 24000
     t = np.arange(rate * 2) / rate
@@ -232,6 +249,25 @@ def test_a_runaway_sentence_is_cut_at_its_length_cap(recording):
     pieces = list(engine.speak("Send it.", engine.prepare_voice(str(recording))))
     assert engine.max_seconds("Send it.") == pytest.approx(3.2)
     assert seconds_of(pieces) == pytest.approx(3.2, abs=0.2)
+
+
+@pytest.mark.parametrize(("text", "words"), [
+    ("Send it.", 2),
+    ("You owe $4,850.75.", 8),  # each digit is said: "four thousand eight hundred..."
+    ("Call me back at 1-800-555-0142.", 15),
+    ("It's me, don't hang up.", 5),  # a contraction is one word
+])
+def test_numbers_count_as_the_words_they_take_to_say(text, words):
+    assert spoken_words(text) == words
+
+
+def test_a_sentence_with_an_amount_gets_time_to_say_it(recording):
+    # Counted by spaces, "$4,850.75" was one word and the cap was 3.8 s.
+    engine = streaming(sse(tone(6.0), silence(2.0)), [])
+    text = "You owe $4,850.75."
+    pieces = list(engine.speak(text, engine.prepare_voice(str(recording))))
+    assert engine.max_seconds(text) == pytest.approx(2.0 + 0.6 * 8)
+    assert seconds_of(pieces) == pytest.approx(6.0, abs=0.1)
 
 
 def test_an_error_event_reaches_the_turn(recording):

@@ -38,6 +38,7 @@ import itertools
 import json
 import logging
 import os
+import re
 import wave
 from dataclasses import dataclass
 from pathlib import Path
@@ -88,14 +89,19 @@ def frame_db(audio: np.ndarray, frame: int) -> np.ndarray:
 
 
 def leveled(wav: bytes, target_db: float = -20.0, peak_db: float = -1.0) -> bytes:
-    """The recording as a 24 kHz WAV with its speech at about `target_db`.
+    """The recording as a mono WAV at its own sample rate, with its speech at
+    about `target_db`. Only the level changes: Drama encodes references at
+    44.1 kHz, so converting to 24 kHz here would lose detail it uses.
 
     Speech level is the median loudness of the 50 ms stretches that are within
     30 dB of the loudest one, so pauses do not count. The gain is capped so the
     loudest sample stays below `peak_db`. Silence comes back unchanged in level.
     """
-    audio = pcm16_to_float(to_pcm16(wav))
-    db = frame_db(audio, RATE // 20)
+    import soundfile
+
+    audio, rate = soundfile.read(io.BytesIO(wav), dtype="float32", always_2d=True)
+    audio = audio.mean(axis=1)
+    db = frame_db(audio, max(1, rate // 20))
     out = audio
     if len(db) and db.max() > -70:
         speech = np.median(db[db > db.max() - 30])
@@ -106,7 +112,7 @@ def leveled(wav: bytes, target_db: float = -20.0, peak_db: float = -1.0) -> byte
     with wave.open(buf, "wb") as w:
         w.setnchannels(1)
         w.setsampwidth(2)
-        w.setframerate(RATE)
+        w.setframerate(rate)
         w.writeframes(float_to_pcm16(out))
     return buf.getvalue()
 
@@ -252,7 +258,7 @@ class DramaEngine(ServedEngine):
 
     def max_seconds(self, text: str) -> float:
         """The longest a sentence may run: generous for real speech, short of a runaway."""
-        return 2.0 + self.seconds_per_word * len(text.split())
+        return 2.0 + self.seconds_per_word * spoken_words(text)
 
     def speak(self, text: str, voice: Reference, first_in_turn: bool = True) -> Iterator[Piece]:
         if not self.stream:
@@ -301,7 +307,7 @@ class DramaEngine(ServedEngine):
             if ended:
                 break
             if spoken >= limit:
-                log.warning("drama: sentence of %d words cut at %.1f s", len(text.split()), spoken)
+                log.warning("drama: sentence of %d words cut at %.1f s", spoken_words(text), spoken)
                 break
             want = self.FIRST_PIECE_SECONDS if first else self.PIECE_SECONDS
             if len(ready) / RATE >= want:
@@ -312,6 +318,12 @@ class DramaEngine(ServedEngine):
             ready = np.concatenate([ready, rest])
         if len(ready):
             yield Piece(float_to_pcm16(ready), RATE)
+
+
+def spoken_words(text: str) -> int:
+    """Roughly how many words `text` takes to say. Each digit counts as one,
+    because Drama reads numbers out: "$4,850.75" is about ten words, not one."""
+    return len(re.findall(r"\d|[^\W\d_]+(?:['’][^\W\d_]+)*", text))
 
 
 def audio_events(lines: Iterator[str]) -> Iterator[tuple[bytes, int]]:
