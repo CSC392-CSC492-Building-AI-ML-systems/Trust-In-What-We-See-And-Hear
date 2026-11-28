@@ -48,8 +48,12 @@ CALL_CONSENT_COLUMNS = (
     # For the target's note about the persona (requester_id is the target).
     "friendship:friendships(requester_id,requester_notes,addressee_notes)"
 )
-# Shown to the caller as "- <key>: <note>"; at most 30 characters.
+# Shown to the caller as "- <key>: <value>"; keys at most 30 characters.
 TARGET_NOTES_KEY = "What they know about you"
+# From the target's own onboarding answer `interests`.
+TARGET_INTERESTS_KEY = "Their interests"
+# The call context's limit for a detail's value (context.py).
+DETAIL_VALUE_LIMIT = 100
 
 # Values of calls.failure_reason.
 TIMED_OUT = "timed_out"  # token never claimed in time, or no result arrived
@@ -90,15 +94,52 @@ def full_name(user: dict[str, Any]) -> str:
     return f"{user['first_name']} {user['last_name']}".strip()
 
 
+def onboarding_details(answers: Any) -> dict[str, str]:
+    """Call-context details from the target's own onboarding answers.
+
+    Only `interests` is used: a list of strings, or comma-separated text (what
+    the onboarding form's text field gives). Whole interests are kept while they
+    fit in one detail value. Every other answer, such as the age range, is
+    never given to the caller. Answers are free-form JSON, so anything else,
+    including a malformed `interests`, gives no details.
+    """
+    if not isinstance(answers, dict):
+        return {}
+    interests = answers.get("interests")
+    if isinstance(interests, str):
+        items = interests.split(",")
+    elif isinstance(interests, list):
+        items = [item for item in interests if isinstance(item, str)]
+    else:
+        return {}
+    kept: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        item = " ".join(item.split())
+        if not item or item.casefold() in seen:
+            continue
+        if kept and len(", ".join([*kept, item])) > DETAIL_VALUE_LIMIT:
+            break
+        seen.add(item.casefold())
+        kept.append(item)
+    # A single interest longer than the limit is shortened by CallContext.
+    return {TARGET_INTERESTS_KEY: ", ".join(kept)} if kept else {}
+
+
 def build_context(
-    consent: dict[str, Any], scenario: dict[str, Any]
+    consent: dict[str, Any],
+    scenario: dict[str, Any],
+    target_answers: Any = None,
 ) -> CallContext:
     """The validated call context for a consent row (CALL_CONSENT_COLUMNS) and scenario row.
 
-    `details` holds only the target's own note about the persona (friends'
-    notes), so the caller knows what the target knows about them. The note is
-    written by the person being called, never by the persona. Onboarding
-    answers are not used: whose may be used is not decided (FOLLOW_UPS.md).
+    `details` holds only facts from the person being called (the target),
+    never from the persona:
+
+    - the target's own note about the persona (friends' notes), so the caller
+      knows what the target knows about them;
+    - the target's interests, from their own onboarding answers
+      (`target_answers`, `users.onboarding_answers`; see `onboarding_details`).
     """
     if not scenario.get("ask"):
         raise CallContextError(
@@ -112,6 +153,7 @@ def build_context(
         note = own_notes(friendship, consent["requester_id"])
         if note:
             details[TARGET_NOTES_KEY] = note
+    details.update(onboarding_details(target_answers))
     data = {
         "persona": {"name": full_name(consent["consenter"]), "relationship": "friend"},
         "target": {"name": full_name(target), "called_as": target["first_name"]},

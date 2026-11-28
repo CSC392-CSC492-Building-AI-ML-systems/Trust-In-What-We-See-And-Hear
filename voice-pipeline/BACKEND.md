@@ -190,10 +190,6 @@ from the internet over `https` for this to work. Without
 
 ## Still open
 
-- `scenario.ask` comes from `scam_scenarios.ask` (migration 0005). `details`
-  holds the call recipient's own note about the friend, if they wrote one
-  (`friendships`, migration 0005). Whose onboarding answers may also go
-  there is not decided.
 - Whether to add a `scoring` status between `in_progress` and `completed`.
   Not needed for the flow above.
 

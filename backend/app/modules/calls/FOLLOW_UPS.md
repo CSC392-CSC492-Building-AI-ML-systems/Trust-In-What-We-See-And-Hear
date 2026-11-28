@@ -21,7 +21,37 @@ Acceptance criteria:
 - Test that call assembly supplies the chosen ask and refuses to start the
   agent when it is missing or invalid.
 
-## Decide whose onboarding answers populate call-context `details`
+## Decide whose onboarding answers populate call-context `details` (done)
+
+Resolved: only the target's own answers (the user starting the call), and only
+`interests`, under the key `Their interests`. The persona's answers are never
+read. See "Trust boundary and integration decisions" in README.md, and
+`onboarding_details` in `service.py`.
+
+Why only `interests`:
+
+- **The onboarding questions are not decided yet.** The form asks only for an
+  age range and optional interests, with a note to add more questions "once
+  the final set has been decided", and it does not save its answers to the
+  backend yet. The backend stores the answers as free-form JSON, with no fixed
+  keys (the schema says "The question set is TBD"). So there is no agreed list
+  of answers to choose from, and no way to know what a future question will
+  ask. Passing every answer on would send any question added later to the
+  caller without anyone deciding it should, so only answers that were
+  deliberately chosen are used, and unknown keys are ignored.
+- **`interests` is the one current answer that helps the call.** A caller
+  posing as a friend can bring up the target's interests to sound familiar,
+  which is a real scam tactic the training should show.
+- **`age_range` is left out.** It adds nothing to the conversation, and it
+  could tell the caller that the target is under 18.
+- **Only the target's answers.** The form tells users their answers are used
+  "only to personalize your training". A call is the target's training, so
+  their own answers fit that promise; the persona's would be their data used
+  in someone else's training.
+
+Revisit this when the question set is decided: for each new question, decide
+whether the caller should know it, and if so add it to `onboarding_details`
+with a key written from the caller's side (like `Their interests`) and a test.
 
 The call context accepts optional personal facts in `details`. The mapping from
 `users.onboarding_answers` is unresolved: the call has both a target (`user_id`)
@@ -36,4 +66,4 @@ Acceptance criteria:
 - Test with distinct target/persona answers to verify that only the intended
   facts are included, and cover absent or removed onboarding answers.
 
-AI-assisted documentation (Codex), cited per the CSC398 AI policy.
+AI-assisted documentation (Codex and Claude Code), cited per the CSC398 AI policy.

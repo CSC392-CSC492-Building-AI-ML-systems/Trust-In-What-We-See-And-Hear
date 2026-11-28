@@ -85,6 +85,9 @@ async def start_call(
     call (voice-pipeline/PROTOCOL.md). After it ends, poll `GET /calls/{id}`
     until `status` is `completed` or `failed`.
 
+    The caller knows the user's own note about the friend and the user's
+    `interests` from onboarding; nothing from the friend's profile is used.
+
     The consent is only marked used after the scenario, the consent and the
     call context have been checked, so those errors leave it usable.
     """
@@ -114,8 +117,14 @@ async def start_call(
     if not consents:
         api_error(status.HTTP_409_CONFLICT, *CONSENT_UNUSABLE)
     consent = consents[0]
+    # The target is the current user (the consent's requester), so only their
+    # own onboarding answers are read; the persona's are never used.
+    profiles = await supabase_db.select(
+        "users", {"id": f"eq.{user.user_id}"}, "onboarding_answers"
+    )
+    target_answers = profiles[0]["onboarding_answers"] if profiles else None
     try:
-        context = build_context(consent, scenario)
+        context = build_context(consent, scenario, target_answers)
     except CallContextError as exc:
         api_error(status.HTTP_409_CONFLICT, exc.code, exc.message)
 

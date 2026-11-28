@@ -14,6 +14,7 @@ from pydantic import SecretStr
 
 from app.core import clock
 from app.integrations.supabase import SupabaseStorage, get_supabase_storage
+from app.modules.calls.service import build_context
 from supabase_mock import body, postgres_error, rows, user_row
 
 ME = UUID(int=1)  # matches the test_user fixture
@@ -129,10 +130,11 @@ RESULT = {
 }
 
 
-def expect_call_start(db, scenario_row=None, consent_row=None):
+def expect_call_start(db, scenario_row=None, consent_row=None, answers=None):
     """Queue the queries of a successful POST /calls."""
     db.on("GET", "scam_scenarios", rows(scenario_row or scenario()))
     db.on("GET", "scam_consents", rows(consent_row or consent()))  # read before anything is used
+    db.on("GET", "users", rows({"onboarding_answers": answers}))
     db.on("GET", "scam_consents", rows({"id": str(CONSENT_ID), "consenter_id": str(FRIEND)}))
     db.on("GET", "voices", rows({"status": "ready"}))
     db.on("PATCH", "scam_consents", rows(consent()))
@@ -180,7 +182,7 @@ def test_start_call(api, db):
             "ask": "Send $300 by e-transfer.",
             "tactics": ["urgency", "secrecy"],
         },
-        "details": {},  # whose onboarding answers to use is not decided
+        "details": {},  # no note about the friend, no onboarding answers
     }
     # The consent is used up, by the current user only.
     used = db.sent("PATCH", "scam_consents")[0]
@@ -202,6 +204,54 @@ def test_start_call_gives_the_caller_only_the_users_own_note(api, db):
     assert "friendship:friendships(" in db.sent("GET", "scam_consents")[0].url.params["select"]
 
 
+def test_start_call_gives_the_caller_the_users_own_interests(api, db):
+    answers = {
+        "age_range": "25-34",  # never given to the caller
+        "interests": ["technology", "travel"],
+        "city": "Toronto",  # not an answer the caller may use
+    }
+    expect_call_start(db, consent_row=consent({ME: MY_NOTE}), answers=answers)
+    response = api.post(
+        "/api/v1/calls", json={"consent_id": str(CONSENT_ID), "scenario_id": str(SCENARIO_ID)}
+    )
+    assert response.status_code == 202
+    assert body(db.sent("POST", "calls")[0])["call_context"]["details"] == {
+        "What they know about you": MY_NOTE,
+        "Their interests": "technology, travel",
+    }
+    # Only the current user's (the target's) answers are read, never the friend's.
+    [profile] = db.sent("GET", "users")
+    assert profile.url.params["id"] == f"eq.{ME}"
+    assert profile.url.params["select"] == "onboarding_answers"
+    assert "onboarding_answers" not in db.sent("GET", "scam_consents")[0].url.params["select"]
+
+
+@pytest.mark.parametrize(
+    ("answers", "details"),
+    [
+        (None, {}),  # no answers, or removed
+        ("not an object", {}),
+        ({}, {}),
+        ({"age_range": "25-34"}, {}),
+        ({"interests": None}, {}),
+        ({"interests": 3}, {}),
+        ({"interests": []}, {}),
+        ({"interests": " , ,"}, {}),
+        ({"interests": "technology, travel ,shopping"}, "technology, travel, shopping"),
+        ({"interests": ["  Board   games ", 7, None, "", "board games", "Music"]}, "Board games, Music"),
+        # Whole interests while they fit in 100 characters.
+        ({"interests": ["a" * 60, "b" * 38, "c"]}, f"{'a' * 60}, {'b' * 38}"),
+        # A single long interest is shortened by the call context instead.
+        ({"interests": ["x" * 150]}, "x" * 100),
+    ],
+)
+def test_onboarding_interests_in_the_call_context(answers, details):
+    if isinstance(details, str):
+        details = {"Their interests": details}
+    context = build_context(consent(), scenario(), answers)
+    assert context.to_dict()["details"] == details
+
+
 def timed_out(request):
     raise httpx.ReadTimeout("no answer", request=request)
 
@@ -210,6 +260,7 @@ def timed_out(request):
 def test_failed_call_insert_gives_the_consent_back(api, db, failure):
     db.on("GET", "scam_scenarios", rows(scenario()))
     db.on("GET", "scam_consents", rows(consent()))
+    db.on("GET", "users", rows({"onboarding_answers": None}))
     db.on("GET", "scam_consents", rows({"id": str(CONSENT_ID), "consenter_id": str(FRIEND)}))
     db.on("GET", "voices", rows({"status": "ready"}))
     db.on("PATCH", "scam_consents", rows(consent()), rows({"id": str(CONSENT_ID)}))
@@ -230,6 +281,7 @@ def test_failed_call_insert_gives_the_consent_back(api, db, failure):
 def test_failed_restore_still_reports_the_original_error(api, db):
     db.on("GET", "scam_scenarios", rows(scenario()))
     db.on("GET", "scam_consents", rows(consent()))
+    db.on("GET", "users", rows({"onboarding_answers": None}))
     db.on("GET", "scam_consents", rows({"id": str(CONSENT_ID), "consenter_id": str(FRIEND)}))
     db.on("GET", "voices", rows({"status": "ready"}))
     db.on("PATCH", "scam_consents", rows(consent()), httpx.Response(503))
@@ -282,6 +334,7 @@ def test_start_call_with_unusable_consent_is_409(api, db):
 def test_start_call_with_unusable_scenario_keeps_the_consent(api, db, changes, code):
     db.on("GET", "scam_scenarios", rows(scenario(**changes)))
     db.on("GET", "scam_consents", rows(consent()))
+    db.on("GET", "users", rows({"onboarding_answers": None}))
     response = api.post(
         "/api/v1/calls", json={"consent_id": str(CONSENT_ID), "scenario_id": str(SCENARIO_ID)}
     )
@@ -303,6 +356,7 @@ def test_start_call_with_unusable_scenario_keeps_the_consent(api, db, changes, c
 def test_start_call_when_consent_cannot_be_used(api, db, use_replies, code):
     db.on("GET", "scam_scenarios", rows(scenario()))
     db.on("GET", "scam_consents", rows(consent()), *use_replies)
+    db.on("GET", "users", rows({"onboarding_answers": None}))
     if code == "voice_not_ready":
         db.on("GET", "voices", rows({"status": "failed"}))
     response = api.post(
